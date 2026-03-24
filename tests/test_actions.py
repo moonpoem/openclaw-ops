@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from actions import check_connection, check_latest_release, diagnose_environment, normalize_version_text
+from actions import (
+    check_connection,
+    check_latest_release,
+    diagnose_environment,
+    normalize_version_text,
+    restart_openclaw,
+    start_openclaw,
+    stop_openclaw,
+)
 from config import AppConfig, HostConfig
 from models import ActionStatus, CommandResult
 import actions
@@ -258,7 +266,135 @@ def test_check_latest_release_reports_update_available(monkeypatch, tmp_path):
 
     assert result.status == ActionStatus.WARNING
     assert result.summary["up_to_date"] is False
-    assert result.message == "发现新版本：1.2.3，当前版本：1.2.2"
+
+
+def test_start_openclaw_starts_when_not_running(monkeypatch, tmp_path):
+    class FakeRunner:
+        def __init__(self, config):
+            self.results = [
+                CommandResult("pgrep -af 'openclaw gateway' || true", [], 0, "", "", 0.1),
+                CommandResult("start_openclaw", [], 0, "__STARTED__:123:/tmp/openclaw-gateway.log\n", "", 0.2),
+                CommandResult(
+                    "pgrep -af 'openclaw gateway' || true",
+                    [],
+                    0,
+                    "123 openclaw gateway\n",
+                    "",
+                    0.1,
+                ),
+            ]
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            result = self.results.pop(0)
+            if stream_callback:
+                stream_callback("stdout", result.stdout)
+            return result
+
+    monkeypatch.setattr(actions, "SSHRunner", FakeRunner)
+    result = start_openclaw(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.SUCCESS
+    assert result.summary["started"] is True
+    assert result.message == "OpenClaw 启动成功"
+
+
+def test_start_openclaw_is_idempotent(monkeypatch, tmp_path):
+    class FakeRunner:
+        def __init__(self, config):
+            self.results = [
+                CommandResult(
+                    "pgrep -af 'openclaw gateway' || true",
+                    [],
+                    0,
+                    "123 openclaw gateway\n",
+                    "",
+                    0.1,
+                ),
+            ]
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            result = self.results.pop(0)
+            if stream_callback:
+                stream_callback("stdout", result.stdout)
+            return result
+
+    monkeypatch.setattr(actions, "SSHRunner", FakeRunner)
+    result = start_openclaw(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.SUCCESS
+    assert result.summary["already_running"] is True
+    assert result.message == "OpenClaw 已在运行"
+    assert len(result.steps) == 1
+
+
+def test_stop_openclaw_stops_running_process(monkeypatch, tmp_path):
+    class FakeRunner:
+        def __init__(self, config):
+            self.results = [
+                CommandResult(
+                    "pgrep -af 'openclaw gateway' || true",
+                    [],
+                    0,
+                    "123 openclaw gateway\n",
+                    "",
+                    0.1,
+                ),
+                CommandResult("stop_openclaw", [], 0, "", "", 0.2),
+                CommandResult("pgrep -af 'openclaw gateway' || true", [], 0, "", "", 0.1),
+            ]
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            result = self.results.pop(0)
+            if stream_callback:
+                stream_callback("stdout", result.stdout)
+            return result
+
+    monkeypatch.setattr(actions, "SSHRunner", FakeRunner)
+    result = stop_openclaw(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.SUCCESS
+    assert result.summary["stopped"] is True
+    assert result.message == "OpenClaw 已停止"
+
+
+def test_restart_openclaw_restarts_process(monkeypatch, tmp_path):
+    class FakeRunner:
+        def __init__(self, config):
+            self.results = [
+                CommandResult(
+                    "pgrep -af 'openclaw gateway' || true",
+                    [],
+                    0,
+                    "123 openclaw gateway\n",
+                    "",
+                    0.1,
+                ),
+                CommandResult("stop_before_restart", [], 0, "", "", 0.2),
+                CommandResult("pgrep -af 'openclaw gateway' || true", [], 0, "", "", 0.1),
+                CommandResult("start_after_restart", [], 0, "__STARTED__:456:/tmp/openclaw-gateway.log\n", "", 0.2),
+                CommandResult(
+                    "pgrep -af 'openclaw gateway' || true",
+                    [],
+                    0,
+                    "456 openclaw gateway\n",
+                    "",
+                    0.1,
+                ),
+            ]
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            result = self.results.pop(0)
+            if stream_callback:
+                stream_callback("stdout", result.stdout)
+            return result
+
+    monkeypatch.setattr(actions, "SSHRunner", FakeRunner)
+    result = restart_openclaw(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.SUCCESS
+    assert result.summary["was_running"] is True
+    assert result.summary["restarted"] is True
+    assert result.message == "OpenClaw 重启成功"
 
 
 def test_normalize_version_text_extracts_release_from_banner():

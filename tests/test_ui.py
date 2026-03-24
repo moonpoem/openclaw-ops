@@ -223,6 +223,9 @@ def test_primary_action_buttons_are_streamlined():
 
     assert "连接检查" in labels
     assert "环境诊断" in labels
+    assert "启动 OpenClaw" in labels
+    assert "停止 OpenClaw" in labels
+    assert "重启 OpenClaw" in labels
     assert "修复并升级 (危险)" in labels
     assert "验证 OpenClaw" in labels
     assert "源码构建兜底 (危险)" in labels
@@ -231,6 +234,23 @@ def test_primary_action_buttons_are_streamlined():
     assert "清理 OpenClaw 残留 (危险)" not in labels
     assert "升级 OpenClaw (危险)" not in labels
     assert "一键修复并升级 (危险)" not in labels
+    window.close()
+
+
+def test_primary_action_buttons_follow_grouped_order():
+    window = make_window()
+
+    labels = [button.text() for button in window.buttons[:7]]
+
+    assert labels == [
+        "连接检查",
+        "环境诊断",
+        "验证 OpenClaw",
+        "启动 OpenClaw",
+        "停止 OpenClaw",
+        "重启 OpenClaw",
+        "修复并升级 (危险)",
+    ]
     window.close()
 
 

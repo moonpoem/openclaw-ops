@@ -35,6 +35,9 @@ from actions import (
     fallback_source_build,
     format_summary,
     repair_and_upgrade,
+    restart_openclaw,
+    start_openclaw,
+    stop_openclaw,
     verify_openclaw,
 )
 from config import AppConfig, HostConfig, normalize_profile_name, save_config
@@ -296,23 +299,38 @@ class OpenClawDesktopApp(QMainWindow):
         layout.setSpacing(8)
         layout.addWidget(QLabel("操作"))
 
-        action_specs = [
-            ("连接检查", check_connection, False),
-            ("环境诊断", diagnose_environment, False),
-            ("修复并升级", repair_and_upgrade, True),
-            ("验证 OpenClaw", verify_openclaw, False),
-            ("源码构建兜底", fallback_source_build, True),
+        action_groups = [
+            (
+                "检查",
+                [
+                    ("连接检查", check_connection, False),
+                    ("环境诊断", diagnose_environment, False),
+                    ("验证 OpenClaw", verify_openclaw, False),
+                ],
+            ),
+            (
+                "运行控制",
+                [
+                    ("启动 OpenClaw", start_openclaw, False),
+                    ("停止 OpenClaw", stop_openclaw, False),
+                    ("重启 OpenClaw", restart_openclaw, False),
+                ],
+            ),
+            (
+                "修复",
+                [
+                    ("修复并升级", repair_and_upgrade, True),
+                    ("源码构建兜底", fallback_source_build, True),
+                ],
+            ),
         ]
-        for label, func, dangerous in action_specs:
-            text = f"{label} {'(危险)' if dangerous else ''}".strip()
-            button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, f=func, l=label, d=dangerous: self.start_action(l, f, d))
-            layout.addWidget(button)
-            self.buttons.append(button)
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(separator)
+        for index, (group_name, action_specs) in enumerate(action_groups):
+            section = self._build_action_section(group_name, action_specs)
+            layout.addWidget(section)
+            if index < len(action_groups) - 1:
+                separator = QFrame()
+                separator.setFrameShape(QFrame.Shape.HLine)
+                layout.addWidget(separator)
 
         extras = [
             ("打开日志目录", self.open_logs_dir),
@@ -327,6 +345,22 @@ class OpenClawDesktopApp(QMainWindow):
 
         layout.addStretch(1)
         return panel
+
+    def _build_action_section(self, title: str, action_specs: list[tuple[str, object, bool]]) -> QWidget:
+        section = QWidget()
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(6)
+        heading = QLabel(title)
+        heading.setStyleSheet("font-weight: 600; color: #334155;")
+        section_layout.addWidget(heading)
+        for label, func, dangerous in action_specs:
+            text = f"{label} {'(危险)' if dangerous else ''}".strip()
+            button = QPushButton(text)
+            button.clicked.connect(lambda _checked=False, f=func, l=label, d=dangerous: self.start_action(l, f, d))
+            section_layout.addWidget(button)
+            self.buttons.append(button)
+        return section
 
     def _build_right_panel(self) -> QWidget:
         panel = QFrame()

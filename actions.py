@@ -209,6 +209,268 @@ def _check_openclaw_version_status(
     return steps, current_version, latest_version
 
 
+def _openclaw_process_query_command() -> str:
+    return "pgrep -af 'openclaw gateway' || true"
+
+
+def _openclaw_process_running(step: StepResult) -> bool:
+    if step.command_result is None:
+        return False
+    output = f"{step.command_result.stdout}\n{step.command_result.stderr}".strip()
+    return bool(output)
+
+
+def start_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        steps = [
+            _run_remote_step(
+                runner,
+                logger,
+                "pre_start_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        ]
+        if _openclaw_process_running(steps[0]):
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="启动 OpenClaw",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+                steps=steps,
+                summary={
+                    "already_running": True,
+                    "processes": steps[0].command_result.stdout.strip(),
+                },
+                message="OpenClaw 已在运行",
+            )
+
+        start_command = (
+            'log_file="${TMPDIR:-/tmp}/openclaw-gateway.log"; '
+            'nohup openclaw gateway >>"$log_file" 2>&1 </dev/null & pid=$!; '
+            'sleep 2; '
+            'if kill -0 "$pid" 2>/dev/null; then '
+            'echo "__STARTED__:$pid:$log_file"; '
+            "else "
+            'echo "__START_FAILED__:$pid:$log_file"; '
+            'wait "$pid" 2>/dev/null || true; '
+            "fi"
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "start_openclaw",
+                start_command,
+                config.command_timeout_seconds,
+            )
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "post_start_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        )
+        running = _openclaw_process_running(steps[-1])
+        status = ActionStatus.SUCCESS if running else ActionStatus.FAILED
+        start_output = steps[1].command_result.stdout.strip()
+        finished_at = now_iso()
+        return ActionResult(
+            action_name="启动 OpenClaw",
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+            steps=steps,
+            summary={
+                "started": running,
+                "start_output": start_output,
+                "processes": steps[-1].command_result.stdout.strip(),
+            },
+            message="OpenClaw 启动成功" if running else "OpenClaw 启动失败",
+        )
+
+    return run_action("启动 OpenClaw", config, ui_callback, worker)
+
+
+def stop_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        steps = [
+            _run_remote_step(
+                runner,
+                logger,
+                "pre_stop_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        ]
+        if not _openclaw_process_running(steps[0]):
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="停止 OpenClaw",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+                steps=steps,
+                summary={
+                    "already_stopped": True,
+                    "processes": "",
+                },
+                message="OpenClaw 未在运行",
+            )
+
+        stop_command = (
+            "pids=$(pgrep -f 'openclaw gateway' || true); "
+            'if [ -n "$pids" ]; then '
+            'echo "$pids" | xargs kill; '
+            "sleep 2; "
+            "remaining=$(pgrep -f 'openclaw gateway' || true); "
+            'if [ -n "$remaining" ]; then echo "$remaining" | xargs kill -9; fi; '
+            "fi"
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "stop_openclaw",
+                stop_command,
+                config.command_timeout_seconds,
+            )
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "post_stop_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        )
+        stopped = not _openclaw_process_running(steps[-1])
+        status = ActionStatus.SUCCESS if stopped else ActionStatus.FAILED
+        finished_at = now_iso()
+        return ActionResult(
+            action_name="停止 OpenClaw",
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+            steps=steps,
+            summary={
+                "stopped": stopped,
+                "remaining_processes": steps[-1].command_result.stdout.strip(),
+            },
+            message="OpenClaw 已停止" if stopped else "OpenClaw 停止失败",
+        )
+
+    return run_action("停止 OpenClaw", config, ui_callback, worker)
+
+
+def restart_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        steps = []
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "pre_restart_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        )
+        was_running = _openclaw_process_running(steps[0])
+        if was_running:
+            stop_command = (
+                "pids=$(pgrep -f 'openclaw gateway' || true); "
+                'if [ -n "$pids" ]; then '
+                'echo "$pids" | xargs kill; '
+                "sleep 2; "
+                "remaining=$(pgrep -f 'openclaw gateway' || true); "
+                'if [ -n "$remaining" ]; then echo "$remaining" | xargs kill -9; fi; '
+                "fi"
+            )
+            steps.append(
+                _run_remote_step(
+                    runner,
+                    logger,
+                    "stop_before_restart",
+                    stop_command,
+                    config.command_timeout_seconds,
+                )
+            )
+            steps.append(
+                _run_remote_step(
+                    runner,
+                    logger,
+                    "after_stop_status",
+                    _openclaw_process_query_command(),
+                    config.command_timeout_seconds,
+                    True,
+                )
+            )
+
+        start_command = (
+            'log_file="${TMPDIR:-/tmp}/openclaw-gateway.log"; '
+            'nohup openclaw gateway >>"$log_file" 2>&1 </dev/null & pid=$!; '
+            'sleep 2; '
+            'if kill -0 "$pid" 2>/dev/null; then '
+            'echo "__STARTED__:$pid:$log_file"; '
+            "else "
+            'echo "__START_FAILED__:$pid:$log_file"; '
+            'wait "$pid" 2>/dev/null || true; '
+            "fi"
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "start_after_restart",
+                start_command,
+                config.command_timeout_seconds,
+            )
+        )
+        steps.append(
+            _run_remote_step(
+                runner,
+                logger,
+                "post_restart_status",
+                _openclaw_process_query_command(),
+                config.command_timeout_seconds,
+                True,
+            )
+        )
+        restarted = _openclaw_process_running(steps[-1])
+        status = ActionStatus.SUCCESS if restarted else ActionStatus.FAILED
+        finished_at = now_iso()
+        return ActionResult(
+            action_name="重启 OpenClaw",
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+            steps=steps,
+            summary={
+                "was_running": was_running,
+                "restarted": restarted,
+                "processes": steps[-1].command_result.stdout.strip(),
+            },
+            message="OpenClaw 重启成功" if restarted else "OpenClaw 重启失败",
+        )
+
+    return run_action("重启 OpenClaw", config, ui_callback, worker)
+
+
 def check_latest_release(config: AppConfig, ui_callback=None) -> ActionResult:
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
         steps, current_version, latest_version = _check_openclaw_version_status(runner, logger, config)
