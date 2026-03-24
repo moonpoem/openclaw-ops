@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
 import shutil
 import subprocess
-import sys
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,143 +15,19 @@ ICO_PATH = ASSETS_DIR / "openclaw.ico"
 ICNS_PATH = ASSETS_DIR / "openclaw.icns"
 
 
-def lerp(a: int, b: int, t: float) -> int:
-    return int(a + (b - a) * t)
-
-
-def draw_gradient(size: int) -> Image.Image:
-    image = Image.new("RGBA", (size, size))
-    pixels = image.load()
-    top = (6, 24, 38)
-    bottom = (13, 72, 88)
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        row = (
-            lerp(top[0], bottom[0], t),
-            lerp(top[1], bottom[1], t),
-            lerp(top[2], bottom[2], t),
-            255,
-        )
-        for x in range(size):
-            pixels[x, y] = row
-    return image
-
-
 def draw_icon(size: int) -> Image.Image:
-    image = draw_gradient(size)
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    margin = int(size * 0.08)
-    draw.rounded_rectangle(
-        (margin, margin, size - margin, size - margin),
-        radius=int(size * 0.22),
-        outline=(255, 255, 255, 36),
-        width=max(2, size // 64),
-    )
 
-    glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse(
-        (
-            int(size * 0.18),
-            int(size * 0.10),
-            int(size * 0.82),
-            int(size * 0.74),
-        ),
-        fill=(255, 177, 64, 48),
-    )
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=max(4, size // 20)))
-    image.alpha_composite(glow)
+    teal = (14, 116, 144, 255)
 
-    shell_box = (
-        int(size * 0.22),
-        int(size * 0.54),
-        int(size * 0.78),
-        int(size * 0.75),
-    )
-    draw.rounded_rectangle(
-        shell_box,
-        radius=int(size * 0.05),
-        fill=(15, 33, 45, 255),
-        outline=(142, 207, 217, 120),
-        width=max(2, size // 96),
-    )
-    draw.rectangle(
-        (
-            int(size * 0.22),
-            int(size * 0.54),
-            int(size * 0.78),
-            int(size * 0.59),
-        ),
-        fill=(22, 58, 72, 255),
-    )
-
-    accent = (255, 184, 77, 255)
-    accent_soft = (255, 209, 120, 255)
-    claw_points = [
-        [
-            (0.34, 0.23),
-            (0.45, 0.10),
-            (0.49, 0.28),
-            (0.43, 0.46),
-            (0.33, 0.39),
-        ],
-        [
-            (0.50, 0.16),
-            (0.62, 0.08),
-            (0.63, 0.30),
-            (0.57, 0.47),
-            (0.48, 0.39),
-        ],
-        [
-            (0.63, 0.22),
-            (0.74, 0.17),
-            (0.70, 0.36),
-            (0.62, 0.50),
-            (0.56, 0.38),
-        ],
+    claws = [
+        [(0.24, 0.80), (0.39, 0.28), (0.44, 0.29), (0.32, 0.81)],
+        [(0.43, 0.82), (0.56, 0.14), (0.62, 0.15), (0.55, 0.83)],
+        [(0.64, 0.78), (0.76, 0.37), (0.81, 0.38), (0.74, 0.79)],
     ]
-    for index, points in enumerate(claw_points):
-        fill = accent if index < 2 else accent_soft
-        draw.polygon([(int(size * x), int(size * y)) for x, y in points], fill=fill)
-
-    draw.arc(
-        (
-            int(size * 0.26),
-            int(size * 0.26),
-            int(size * 0.72),
-            int(size * 0.60),
-        ),
-        start=10,
-        end=165,
-        fill=(255, 224, 170, 220),
-        width=max(3, size // 64),
-    )
-
-    term = (214, 244, 248, 255)
-    width = max(3, size // 64)
-    draw.line(
-        (
-            int(size * 0.34),
-            int(size * 0.64),
-            int(size * 0.42),
-            int(size * 0.68),
-            int(size * 0.34),
-            int(size * 0.72),
-        ),
-        fill=term,
-        width=width,
-        joint="curve",
-    )
-    draw.line(
-        (
-            int(size * 0.48),
-            int(size * 0.72),
-            int(size * 0.63),
-            int(size * 0.72),
-        ),
-        fill=term,
-        width=width,
-    )
+    for points in claws:
+        draw.polygon([(int(size * x), int(size * y)) for x, y in points], fill=teal)
 
     return image
 
