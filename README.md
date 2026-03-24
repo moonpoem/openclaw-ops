@@ -2,6 +2,10 @@
 
 一个基于 Python `PyQt6` 的桌面运维工具，用来通过本机 `ssh` 连接远程主机，执行 OpenClaw 相关的连接检查、环境诊断、版本检查、修复升级和源码构建兜底。
 
+## License
+
+MIT. See [LICENSE](/Users/moon/openclawops/LICENSE).
+
 ## 当前能力
 
 - 多主机配置：支持在界面中新增、复制、编辑、删除主机配置
@@ -32,6 +36,22 @@ pip install -r requirements.txt
 cp .env.example .env
 python app.py
 ```
+
+## 安装与分发
+
+源码运行：
+
+```bash
+python3 app.py
+```
+
+macOS 打包产物：
+
+- `dist/OpenClawOps.app`
+
+Windows 打包产物：
+
+- `dist\OpenClawOps\`，需在 Windows 上执行打包
 
 ## 配置方式
 
@@ -117,3 +137,8 @@ build_windows.bat
 ```
 
 注意：`PyInstaller` 不能在 macOS 上直接产出 Windows `.exe`，Windows 版本需要在 Windows 机器上执行打包脚本。
+
+## 发布资料
+
+- 发布清单：[docs/RELEASE_CHECKLIST.md](/Users/moon/openclawops/docs/RELEASE_CHECKLIST.md)
+- Release 文案模板：[docs/RELEASE_NOTES_TEMPLATE.md](/Users/moon/openclawops/docs/RELEASE_NOTES_TEMPLATE.md)
