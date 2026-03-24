@@ -19,9 +19,9 @@ class FakeRunner:
 def test_check_connection_returns_structured_result(monkeypatch, tmp_path):
     result = CommandResult(
         command="hostname",
-        full_command=["ssh", "moon@smarthost.local", "hostname"],
+        full_command=["ssh", "ops@example-host.local", "hostname"],
         exit_code=0,
-        stdout="smarthost\n",
+        stdout="example-host\n",
         stderr="",
         duration_seconds=0.42,
     )
@@ -29,7 +29,7 @@ def test_check_connection_returns_structured_result(monkeypatch, tmp_path):
     config = AppConfig(logs_dir=tmp_path)
     action_result = check_connection(config)
     assert action_result.status == ActionStatus.SUCCESS
-    assert action_result.summary["target_host"] == "smarthost"
+    assert action_result.summary["target_host"] == "example-host"
     assert Path(action_result.log_path).exists()
 
 
@@ -44,7 +44,7 @@ def test_fallback_source_build_expands_remote_workdir(monkeypatch, tmp_path):
             commands.append(remote_command)
             return CommandResult(
                 command=remote_command,
-                full_command=["ssh", "moon@smarthost.local", remote_command],
+                full_command=["ssh", "ops@example-host.local", remote_command],
                 exit_code=0,
                 stdout="ok\n",
                 stderr="",
@@ -72,7 +72,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
             self.results = [
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="1.2.2\n",
                     stderr="",
@@ -80,7 +80,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm view openclaw version",
-                    full_command=["ssh", "moon@smarthost.local", "npm view openclaw version"],
+                    full_command=["ssh", "ops@example-host.local", "npm view openclaw version"],
                     exit_code=0,
                     stdout="1.2.3\n",
                     stderr="",
@@ -88,7 +88,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm install -g openclaw@latest",
-                    full_command=["ssh", "moon@smarthost.local", "npm install -g openclaw@latest"],
+                    full_command=["ssh", "ops@example-host.local", "npm install -g openclaw@latest"],
                     exit_code=0,
                     stdout="installed\n",
                     stderr="",
@@ -96,7 +96,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="node -v",
-                    full_command=["ssh", "moon@smarthost.local", "node -v"],
+                    full_command=["ssh", "ops@example-host.local", "node -v"],
                     exit_code=0,
                     stdout="v20.0.0\n",
                     stderr="",
@@ -104,7 +104,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm -v",
-                    full_command=["ssh", "moon@smarthost.local", "npm -v"],
+                    full_command=["ssh", "ops@example-host.local", "npm -v"],
                     exit_code=0,
                     stdout="10.0.0\n",
                     stderr="",
@@ -112,7 +112,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="which openclaw",
-                    full_command=["ssh", "moon@smarthost.local", "which openclaw"],
+                    full_command=["ssh", "ops@example-host.local", "which openclaw"],
                     exit_code=0,
                     stdout="/opt/homebrew/bin/openclaw\n",
                     stderr="",
@@ -120,7 +120,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="1.2.3\n",
                     stderr="",
@@ -128,7 +128,7 @@ def test_upgrade_openclaw_keeps_single_log_file(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="openclaw gateway",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw gateway"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw gateway"],
                     exit_code=0,
                     stdout="gateway ok\n",
                     stderr="",
@@ -156,7 +156,7 @@ def test_upgrade_openclaw_skips_when_already_latest(monkeypatch, tmp_path):
             self.results = [
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="v1.2.3\n",
                     stderr="",
@@ -164,7 +164,7 @@ def test_upgrade_openclaw_skips_when_already_latest(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm view openclaw version",
-                    full_command=["ssh", "moon@smarthost.local", "npm view openclaw version"],
+                    full_command=["ssh", "ops@example-host.local", "npm view openclaw version"],
                     exit_code=0,
                     stdout="1.2.3\n",
                     stderr="",
@@ -195,7 +195,7 @@ def test_check_latest_release_reports_up_to_date(monkeypatch, tmp_path):
             self.results = [
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="v1.2.3\n",
                     stderr="",
@@ -203,7 +203,7 @@ def test_check_latest_release_reports_up_to_date(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm view openclaw version",
-                    full_command=["ssh", "moon@smarthost.local", "npm view openclaw version"],
+                    full_command=["ssh", "ops@example-host.local", "npm view openclaw version"],
                     exit_code=0,
                     stdout="1.2.3\n",
                     stderr="",
@@ -231,7 +231,7 @@ def test_check_latest_release_reports_update_available(monkeypatch, tmp_path):
             self.results = [
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="1.2.2\n",
                     stderr="",
@@ -239,7 +239,7 @@ def test_check_latest_release_reports_update_available(monkeypatch, tmp_path):
                 ),
                 CommandResult(
                     command="npm view openclaw version",
-                    full_command=["ssh", "moon@smarthost.local", "npm view openclaw version"],
+                    full_command=["ssh", "ops@example-host.local", "npm view openclaw version"],
                     exit_code=0,
                     stdout="1.2.3\n",
                     stderr="",
@@ -271,7 +271,7 @@ def test_check_latest_release_accepts_banner_style_current_version(monkeypatch, 
             self.results = [
                 CommandResult(
                     command="openclaw --version",
-                    full_command=["ssh", "moon@smarthost.local", "openclaw --version"],
+                    full_command=["ssh", "ops@example-host.local", "openclaw --version"],
                     exit_code=0,
                     stdout="OpenClaw 2026.3.23-2 (7ffe7e4)\n",
                     stderr="",
@@ -279,7 +279,7 @@ def test_check_latest_release_accepts_banner_style_current_version(monkeypatch, 
                 ),
                 CommandResult(
                     command="npm view openclaw version",
-                    full_command=["ssh", "moon@smarthost.local", "npm view openclaw version"],
+                    full_command=["ssh", "ops@example-host.local", "npm view openclaw version"],
                     exit_code=0,
                     stdout="2026.3.23-2\n",
                     stderr="",

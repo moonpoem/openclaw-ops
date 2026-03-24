@@ -7,8 +7,8 @@ def test_load_config_supports_multiple_profiles(tmp_path):
     env_file.write_text(
         "\n".join(
             [
-                "DISPLAY_NAME=我的 smarthost",
-                "REMOTE_HOST=moon@smarthost.local",
+                "DISPLAY_NAME=示例主机",
+                "REMOTE_HOST=ops@example-host.local",
                 "SSH_IDENTITY_FILE=~/.ssh/id_ed25519",
                 "PROFILE_NAMES=staging",
                 "ACTIVE_PROFILE=staging",
@@ -25,7 +25,7 @@ def test_load_config_supports_multiple_profiles(tmp_path):
 
     assert config.selected_profile == "staging"
     assert config.profile_names == [PRIMARY_PROFILE_NAME, "staging"]
-    assert config.profiles[PRIMARY_PROFILE_NAME].display_name == "我的 smarthost"
+    assert config.profiles[PRIMARY_PROFILE_NAME].display_name == "示例主机"
     assert config.profiles["staging"].remote_host == "ops@staging.example.com"
     assert config.remote_host == "ops@staging.example.com"
     assert config.remote_user == "ops"

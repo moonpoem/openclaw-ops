@@ -205,7 +205,7 @@ def test_handle_result_success_sets_green_status_light(monkeypatch):
             started_at="2026-03-24T23:40:00",
             finished_at="2026-03-24T23:40:01",
             duration_seconds=0.2,
-            summary={"target_host": "smarthost.local"},
+            summary={"target_host": "example-host.local"},
             message="connection ok",
         )
     )
@@ -262,7 +262,7 @@ def test_delete_primary_profile_is_blocked(monkeypatch):
 
     window._delete_current_profile()
 
-    assert infos == [("不能删除", "默认 smarthost 不能删除。")]
+    assert infos == [("不能删除", "默认示例主机不能删除。")]
     assert PRIMARY_PROFILE_NAME in window.config.profiles
     window.close()
 
@@ -279,7 +279,7 @@ def test_delete_current_profile_removes_it_and_switches_back(monkeypatch, tmp_pa
 
     assert "staging" not in window.config.profiles
     assert window.config.selected_profile == PRIMARY_PROFILE_NAME
-    assert window.profile_selector.currentText() == "我的 smarthost"
+    assert window.profile_selector.currentText() == "示例主机"
     assert infos == [("主机已删除", "已删除主机配置：预发布环境")]
     window.close()
 
@@ -301,19 +301,19 @@ def test_clone_current_profile_uses_dialog_result(monkeypatch, tmp_path):
 
         def profile_data(self):
             return HostConfig(
-                profile_name="smarthost_copy",
-                display_name="我的 smarthost 副本",
-                remote_host="moon@copy.local",
+                profile_name="default_copy",
+                display_name="示例主机 副本",
+                remote_host="ops@copy.local",
             )
 
     monkeypatch.setattr(ui, "HostProfileDialog", FakeDialog)
 
     window._clone_current_profile()
 
-    assert "smarthost_copy" in window.config.profiles
-    assert window.config.selected_profile == "smarthost_copy"
-    assert window.profile_selector.currentText() == "我的 smarthost 副本"
-    assert infos == [("主机已保存", "已保存主机配置：我的 smarthost 副本")]
+    assert "default_copy" in window.config.profiles
+    assert window.config.selected_profile == "default_copy"
+    assert window.profile_selector.currentText() == "示例主机 副本"
+    assert infos == [("主机已保存", "已保存主机配置：示例主机 副本")]
     window.close()
 
 
@@ -382,14 +382,14 @@ def test_host_profile_dialog_test_connection_success(monkeypatch, tmp_path):
             started_at="2026-03-24T23:30:00",
             finished_at="2026-03-24T23:30:01",
             duration_seconds=0.2,
-            summary={"target_host": "smarthost.local"},
+            summary={"target_host": "example-host.local"},
             message="connection ok",
         )
     )
 
     assert dialog.test_connection_button.isEnabled() is True
-    assert dialog.test_status_label.text() == "连接成功: smarthost.local"
-    assert infos == [("连接成功", "已连接到 smarthost.local")]
+    assert dialog.test_status_label.text() == "连接成功: example-host.local"
+    assert infos == [("连接成功", "已连接到 example-host.local")]
     dialog.close()
 
 

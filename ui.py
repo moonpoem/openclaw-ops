@@ -376,7 +376,7 @@ class OpenClawDesktopApp(QMainWindow):
         return HostConfig(
             profile_name="new_host",
             display_name="新主机",
-            remote_host="moon@newhost.local",
+            remote_host="ops@newhost.local",
             remote_user=base.remote_user,
             ssh_identities_only=base.ssh_identities_only,
             ssh_identity_file=base.ssh_identity_file,
@@ -437,8 +437,8 @@ class OpenClawDesktopApp(QMainWindow):
             QMessageBox.information(self, "任务进行中", "任务运行期间不能删除主机。")
             return
         profile = self.config.active_profile
-        if profile.profile_name == "smarthost":
-            QMessageBox.information(self, "不能删除", "默认 smarthost 不能删除。")
+        if profile.profile_name == "default":
+            QMessageBox.information(self, "不能删除", "默认示例主机不能删除。")
             return
         confirmed = QMessageBox.question(
             self,

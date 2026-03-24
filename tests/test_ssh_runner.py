@@ -6,7 +6,7 @@ def test_build_ssh_command_injects_path_prefix():
     config = AppConfig(
         profiles={
             PRIMARY_PROFILE_NAME: HostConfig(
-                remote_host="moon@smarthost.local",
+                remote_host="ops@example-host.local",
                 remote_path_prefix="export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH;",
                 ssh_identity_file="",
                 ssh_config_path="",
@@ -19,7 +19,7 @@ def test_build_ssh_command_injects_path_prefix():
         "ssh",
         "-o",
         "IdentitiesOnly=yes",
-        "moon@smarthost.local",
+        "ops@example-host.local",
         "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; node -v",
     ]
 
@@ -28,7 +28,7 @@ def test_build_ssh_command_supports_identity_file_and_config():
     config = AppConfig(
         profiles={
             PRIMARY_PROFILE_NAME: HostConfig(
-                remote_host="openclaw-smarthost",
+                remote_host="openclaw-example",
                 ssh_identity_file="~/.ssh/id_ed25519",
                 ssh_config_path="~/.ssh/config",
             ),
@@ -46,7 +46,7 @@ def test_build_ssh_command_supports_identity_file_and_config():
         "/Users/moon/.ssh/id_ed25519",
         "-F",
         "/Users/moon/.ssh/config",
-        "openclaw-smarthost",
+        "openclaw-example",
         "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; hostname",
     ]
 

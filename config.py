@@ -11,7 +11,7 @@ APP_NAME = "OpenClawOps"
 DEFAULT_ENV_FILENAME = ".env"
 DEFAULT_LOGS_DIRNAME = "logs"
 DEFAULT_ENV_PATH = Path(DEFAULT_ENV_FILENAME)
-PRIMARY_PROFILE_NAME = "smarthost"
+PRIMARY_PROFILE_NAME = "default"
 
 
 def _parse_bool(value: str | bool | None, default: bool) -> bool:
@@ -92,10 +92,10 @@ def default_logs_dir() -> Path:
 @dataclass(frozen=True)
 class HostConfig:
     profile_name: str = PRIMARY_PROFILE_NAME
-    display_name: str = "我的 smarthost"
-    remote_host: str = "moon@smarthost.local"
+    display_name: str = "示例主机"
+    remote_host: str = "ops@example-host.local"
     remote_path_prefix: str = "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH;"
-    remote_user: str = "moon"
+    remote_user: str = "ops"
     ssh_identities_only: bool = True
     ssh_identity_file: str = "~/.ssh/id_ed25519"
     ssh_config_path: str = "~/.ssh/config"
