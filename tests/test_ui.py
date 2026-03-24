@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from config import AppConfig, HostConfig, PRIMARY_PROFILE_NAME
@@ -383,8 +384,9 @@ def test_host_profile_dialog_test_connection_starts_background_run(monkeypatch, 
     dialog._test_connection()
 
     assert dialog.test_connection_button.isEnabled() is False
-    assert dialog.test_status_label.text() == "正在测试连接..."
+    assert "正在测试连接" in dialog.test_status_label.text()
     assert dialog.test_worker_thread is not None
+    dialog.test_in_progress = False
     dialog.close()
 
 
@@ -433,7 +435,52 @@ def test_host_profile_dialog_test_connection_failure(monkeypatch, tmp_path):
     )
 
     assert dialog.test_connection_button.isEnabled() is True
-    assert dialog.test_status_label.text() == "连接失败"
+    assert dialog.test_status_label.text() == "连接失败: ssh authentication failed"
     assert errors and errors[0][0] == "连接失败"
     assert "ssh authentication failed" in errors[0][1]
+    dialog.close()
+
+
+def test_host_profile_dialog_blocks_duplicate_connection_test(monkeypatch, tmp_path):
+    get_qapp()
+    dialog = HostProfileDialog(None, HostConfig(), creating=True, logs_dir=tmp_path)
+    infos = []
+    monkeypatch.setattr(ui.QMessageBox, "information", lambda *args: infos.append(args[1:3]))
+    dialog.test_in_progress = True
+
+    dialog._test_connection()
+
+    assert infos == [("测试进行中", "当前正在测试连接，请等待结果返回。")]
+    dialog.test_in_progress = False
+    dialog.close()
+
+
+def test_host_profile_dialog_reject_is_blocked_while_testing(monkeypatch, tmp_path):
+    get_qapp()
+    dialog = HostProfileDialog(None, HostConfig(), creating=True, logs_dir=tmp_path)
+    infos = []
+    monkeypatch.setattr(ui.QMessageBox, "information", lambda *args: infos.append(args[1:3]))
+    dialog.test_in_progress = True
+
+    dialog.reject()
+
+    assert infos == [("测试进行中", "连接测试还未结束，请等待当前测试完成。")]
+    assert dialog.isVisible() is False
+    dialog.test_in_progress = False
+    dialog.close()
+
+
+def test_host_profile_dialog_close_event_is_blocked_while_testing(monkeypatch, tmp_path):
+    get_qapp()
+    dialog = HostProfileDialog(None, HostConfig(), creating=True, logs_dir=tmp_path)
+    infos = []
+    monkeypatch.setattr(ui.QMessageBox, "information", lambda *args: infos.append(args[1:3]))
+    dialog.test_in_progress = True
+    event = QCloseEvent()
+
+    dialog.closeEvent(event)
+
+    assert infos == [("测试进行中", "连接测试还未结束，请等待当前测试完成。")]
+    assert event.isAccepted() is False
+    dialog.test_in_progress = False
     dialog.close()

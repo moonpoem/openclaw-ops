@@ -516,6 +516,8 @@ def check_connection(config: AppConfig, ui_callback=None) -> ActionResult:
             "connected": status == ActionStatus.SUCCESS,
             "target_host": host,
             "duration_seconds": round(duration, 2),
+            "timed_out": step.command_result.timed_out if step.command_result else False,
+            "stderr": step.command_result.stderr.strip() if step.command_result else "",
             "ssh_issue": step.command_result.ssh_issue if step.command_result else None,
         }
         return ActionResult(

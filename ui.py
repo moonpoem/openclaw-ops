@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QGuiApplication, QIcon
+from PyQt6.QtGui import QAction, QCloseEvent, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -56,6 +56,7 @@ class HostProfileDialog(QDialog):
         self.logs_dir = logs_dir
         self.test_worker_thread: QThread | None = None
         self.test_worker: ActionWorker | None = None
+        self.test_in_progress = False
         self.setWindowTitle("新增主机" if creating else "编辑当前主机")
         self._build_ui()
 
@@ -99,6 +100,7 @@ class HostProfileDialog(QDialog):
         layout.addLayout(form)
 
         self.test_status_label = QLabel("")
+        self.test_status_label.setWordWrap(True)
         layout.addWidget(self.test_status_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -127,6 +129,9 @@ class HostProfileDialog(QDialog):
         )
 
     def _test_connection(self) -> None:
+        if self.test_in_progress:
+            QMessageBox.information(self, "测试进行中", "当前正在测试连接，请等待结果返回。")
+            return
         profile = self.profile_data()
         if not profile.remote_host:
             QMessageBox.warning(self, "缺少 SSH 目标", "请先填写 SSH 目标。")
@@ -136,8 +141,7 @@ class HostProfileDialog(QDialog):
             selected_profile=profile.profile_name,
             logs_dir=self.logs_dir,
         )
-        self.test_status_label.setText("正在测试连接...")
-        self.test_connection_button.setEnabled(False)
+        self._set_test_running_state(True, "正在测试连接... 这一步会在超时后自动失败，不会一直等待。")
         self.test_worker_thread = QThread(self)
         self.test_worker = ActionWorker(config, check_connection)
         self.test_worker.moveToThread(self.test_worker_thread)
@@ -150,18 +154,18 @@ class HostProfileDialog(QDialog):
         self.test_worker_thread.start()
 
     def _handle_test_connection_result(self, result: ActionResult) -> None:
-        self.test_connection_button.setEnabled(True)
+        self._set_test_running_state(False)
         if result.status == ActionStatus.SUCCESS:
             target_host = result.summary.get("target_host") or self.profile_data().remote_host
             self.test_status_label.setText(f"连接成功: {target_host}")
             QMessageBox.information(self, "连接成功", f"已连接到 {target_host}")
             return
-        self.test_status_label.setText("连接失败")
+        self.test_status_label.setText(self._format_connection_failure_text(result.summary))
         QMessageBox.critical(self, "连接失败", format_summary(result.summary))
 
     def _handle_test_connection_error(self, trace: str) -> None:
-        self.test_connection_button.setEnabled(True)
-        self.test_status_label.setText("连接失败")
+        self._set_test_running_state(False)
+        self.test_status_label.setText("连接失败: 后台线程异常")
         QMessageBox.critical(self, "连接失败", trace)
 
     def _cleanup_test_worker(self) -> None:
@@ -169,6 +173,46 @@ class HostProfileDialog(QDialog):
             self.test_worker.deleteLater()
             self.test_worker = None
         self.test_worker_thread = None
+
+    def _set_test_running_state(self, running: bool, status_text: str | None = None) -> None:
+        self.test_in_progress = running
+        self.test_connection_button.setEnabled(not running)
+        save_button = self.findChild(QDialogButtonBox)
+        if save_button is not None:
+            save_button.button(QDialogButtonBox.StandardButton.Save).setEnabled(not running)
+        if status_text is not None:
+            self.test_status_label.setText(status_text)
+
+    def _format_connection_failure_text(self, summary: dict) -> str:
+        issue = str(summary.get("ssh_issue") or "").strip()
+        stderr = str(summary.get("stderr") or "").strip()
+        if issue:
+            return f"连接失败: {issue}"
+        if stderr:
+            first_line = stderr.splitlines()[0]
+            return f"连接失败: {first_line}"
+        if summary.get("timed_out"):
+            return "连接失败: 连接测试超时"
+        return "连接失败"
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.test_in_progress:
+            QMessageBox.information(self, "测试进行中", "连接测试还未结束，请等待当前测试完成。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        if self.test_in_progress:
+            QMessageBox.information(self, "测试进行中", "连接测试还未结束，请等待当前测试完成。")
+            return
+        super().reject()
+
+    def accept(self) -> None:
+        if self.test_in_progress:
+            QMessageBox.information(self, "测试进行中", "连接测试还未结束，请等待当前测试完成。")
+            return
+        super().accept()
 
 
 class ActionWorker(QObject):

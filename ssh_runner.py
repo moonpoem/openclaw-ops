@@ -16,8 +16,26 @@ from models import CommandResult
 class SSHRunner:
     config: AppConfig
 
+    def _connect_timeout_seconds(self) -> int:
+        timeout = min(self.config.command_timeout_seconds, 15)
+        return max(timeout, 3)
+
     def _ssh_options(self) -> list[str]:
         options: list[str] = []
+        options.extend(
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "NumberOfPasswordPrompts=0",
+                "-o",
+                f"ConnectTimeout={self._connect_timeout_seconds()}",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=1",
+            ]
+        )
         if self.config.ssh_identities_only:
             options.extend(["-o", "IdentitiesOnly=yes"])
         if self.config.ssh_identity_file:
@@ -132,6 +150,8 @@ def detect_ssh_issue(exit_code: int, stderr: str, timed_out: bool) -> str | None
     lowered = stderr.lower()
     if timed_out:
         return "remote command timed out"
+    if "host key verification failed" in lowered:
+        return "ssh host key verification failed"
     if "permission denied" in lowered or "password" in lowered:
         return "ssh authentication failed or requires interactive password input"
     if "could not resolve hostname" in lowered:

@@ -18,6 +18,16 @@ def test_build_ssh_command_injects_path_prefix():
     assert command == [
         "ssh",
         "-o",
+        "BatchMode=yes",
+        "-o",
+        "NumberOfPasswordPrompts=0",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=1",
+        "-o",
         "IdentitiesOnly=yes",
         "ops@example-host.local",
         "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; node -v",
@@ -41,6 +51,16 @@ def test_build_ssh_command_supports_identity_file_and_config():
     assert command == [
         "ssh",
         "-o",
+        "BatchMode=yes",
+        "-o",
+        "NumberOfPasswordPrompts=0",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=1",
+        "-o",
         "IdentitiesOnly=yes",
         "-i",
         "/Users/moon/.ssh/id_ed25519",
@@ -54,3 +74,8 @@ def test_build_ssh_command_supports_identity_file_and_config():
 def test_detect_ssh_issue_for_password_prompt():
     message = detect_ssh_issue(255, "Permission denied, please try again.\npassword:", False)
     assert message == "ssh authentication failed or requires interactive password input"
+
+
+def test_detect_ssh_issue_for_host_key_failure():
+    message = detect_ssh_issue(255, "Host key verification failed.\n", False)
+    assert message == "ssh host key verification failed"
