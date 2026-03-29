@@ -13,6 +13,7 @@ import time
 from config import AppConfig
 from logging_utils import ActionLogger, create_log_file
 from models import ActionResult, ActionStatus, CommandResult, StepResult
+from platform_support import normalize_remote_platform_name
 from ssh_runner import SSHRunner
 
 
@@ -260,6 +261,23 @@ def _check_openclaw_install_state(
     return steps, install_exists, has_residue
 
 
+def _detect_remote_platform_with_runner(
+    runner: SSHRunner,
+    logger: ActionLogger,
+    config: AppConfig,
+) -> tuple[str, StepResult]:
+    step = _run_remote_step(
+        runner,
+        logger,
+        "remote_platform",
+        "uname -s 2>/dev/null || echo unknown",
+        config.command_timeout_seconds,
+        True,
+    )
+    raw_output = (step.command_result.stdout or step.command_result.stderr).strip()
+    return normalize_remote_platform_name(raw_output), step
+
+
 def _tunnel_state_path(config: AppConfig) -> Path:
     return config.logs_dir / f".localhost_tunnel_{config.selected_profile}.json"
 
@@ -299,7 +317,13 @@ def _read_tunnel_state(config: AppConfig) -> dict | None:
         path.unlink(missing_ok=True)
         return None
     pid = payload.get("pid")
-    if not isinstance(pid, int) or not _process_alive(pid):
+    if not isinstance(pid, int):
+        path.unlink(missing_ok=True)
+        return None
+    if pid > 0 and not _process_alive(pid):
+        path.unlink(missing_ok=True)
+        return None
+    if pid <= 0 and payload.get("mode") == "managed" and not SSHRunner(config).has_managed_tunnel():
         path.unlink(missing_ok=True)
         return None
     return payload
@@ -542,6 +566,99 @@ def _start_localhost_access_with_runner(
         )
         started = time.monotonic()
         logger.write("==> start_localhost_access")
+        if config.ssh_auth_method == "password":
+            try:
+                runner.start_managed_tunnel(
+                    local_port=config.local_forward_port,
+                    remote_port=config.gateway_web_port,
+                )
+            except Exception as exc:
+                duration = time.monotonic() - started
+                step = StepResult(
+                    name="start_localhost_access",
+                    status=ActionStatus.FAILED,
+                    command_result=_local_command_result(
+                        ["paramiko-tunnel", str(config.local_forward_port), str(config.gateway_web_port)],
+                        exit_code=1,
+                        duration_seconds=duration,
+                        stderr=str(exc),
+                    ),
+                    message="localhost tunnel failed to start",
+                )
+                logger.write_command_result("start_localhost_access", step.command_result)
+                finished_at = now_iso()
+                return ActionResult(
+                    action_name="开启 localhost 访问",
+                    status=ActionStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                    steps=[step],
+                    summary={
+                        "localhost_url": localhost_url,
+                        "local_forward_port": config.local_forward_port,
+                        "remote_gateway_port": config.gateway_web_port,
+                        "error": "localhost tunnel failed to become ready",
+                    },
+                    message="localhost 访问启动失败",
+                )
+            if not _wait_for_local_port(config.local_forward_port):
+                runner.stop_managed_tunnel()
+                duration = time.monotonic() - started
+                finished_at = now_iso()
+                return ActionResult(
+                    action_name="开启 localhost 访问",
+                    status=ActionStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=duration,
+                    steps=[],
+                    summary={
+                        "localhost_url": localhost_url,
+                        "local_forward_port": config.local_forward_port,
+                        "remote_gateway_port": config.gateway_web_port,
+                        "error": "localhost tunnel failed to become ready",
+                    },
+                    message="localhost 访问启动失败",
+                )
+            duration = time.monotonic() - started
+            step = StepResult(
+                name="start_localhost_access",
+                status=ActionStatus.SUCCESS,
+                command_result=_local_command_result(
+                    ["paramiko-tunnel", str(config.local_forward_port), str(config.gateway_web_port)],
+                    exit_code=0,
+                    duration_seconds=duration,
+                ),
+            )
+            logger.write_command_result("start_localhost_access", step.command_result)
+            _write_tunnel_state(
+                config,
+                {
+                    "pid": -2,
+                    "mode": "managed",
+                    "profile_name": config.selected_profile,
+                    "localhost_url": localhost_url,
+                    "local_forward_port": config.local_forward_port,
+                    "remote_gateway_port": config.gateway_web_port,
+                },
+            )
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="开启 localhost 访问",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=duration,
+                steps=[step],
+                summary={
+                    "localhost_url": localhost_url,
+                    "local_forward_port": config.local_forward_port,
+                    "remote_gateway_port": config.gateway_web_port,
+                    "mode": "managed",
+                },
+                message=f"localhost 访问已就绪（{localhost_url}）",
+            )
         with logger.log_path.open("a", encoding="utf-8") as handle:
             process = subprocess.Popen(
                 tunnel_command,
@@ -763,6 +880,8 @@ def stop_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
 
         pid = int(existing["pid"])
         if pid <= 0:
+            if existing.get("mode") == "managed":
+                runner.stop_managed_tunnel()
             _clear_tunnel_state(config)
             finished_at = now_iso()
             return ActionResult(
@@ -1098,9 +1217,10 @@ def check_connection(config: AppConfig, ui_callback=None) -> ActionResult:
                 message="connection failed",
             )
 
+        remote_platform, remote_platform_step = _detect_remote_platform_with_runner(runner, logger, config)
         diagnose_result = diagnose_environment(config, ui_callback=logger.ui_callback)
         verify_result = verify_openclaw(config, ui_callback=logger.ui_callback)
-        steps = [step, *diagnose_result.steps, *verify_result.steps]
+        steps = [step, remote_platform_step, *diagnose_result.steps, *verify_result.steps]
         status = ActionStatus.SUCCESS
         if diagnose_result.status == ActionStatus.FAILED or verify_result.status == ActionStatus.FAILED:
             status = ActionStatus.FAILED
@@ -1113,6 +1233,7 @@ def check_connection(config: AppConfig, ui_callback=None) -> ActionResult:
             "target_host": host,
             "duration_seconds": round(duration, 2),
             "ssh_issue": None,
+            "remote_platform": remote_platform,
             "diagnose": diagnose_result.summary,
             "verify": verify_result.summary,
         }
@@ -1150,6 +1271,9 @@ def diagnose_environment(config: AppConfig, ui_callback=None) -> ActionResult:
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
         steps: list[StepResult] = []
         summary: dict[str, str | bool | list[str]] = {}
+        remote_platform, remote_platform_step = _detect_remote_platform_with_runner(runner, logger, config)
+        steps.append(remote_platform_step)
+        summary["remote_platform"] = remote_platform
         for name, command in commands:
             step = _run_remote_step(runner, logger, name, command, config.command_timeout_seconds, True)
             steps.append(step)
@@ -1201,7 +1325,7 @@ def fix_npm_environment(config: AppConfig, ui_callback=None) -> ActionResult:
     commands = [
         (
             "fix_npm_ownership",
-            f"if [ -d \"$HOME/.npm\" ]; then chown -R {config.remote_user}:staff \"$HOME/.npm\"; else echo '~/.npm missing'; fi",
+            'if [ -d "$HOME/.npm" ]; then chown -R "$(id -un)":"$(id -gn)" "$HOME/.npm"; else echo \'~/.npm missing\'; fi',
         ),
         ("remove_npm_cache", "rm -rf \"$HOME/.npm/_cacache\""),
         ("npm_cache_verify", "npm cache verify"),

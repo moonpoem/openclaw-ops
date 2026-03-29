@@ -5,7 +5,6 @@ import sys
 import traceback
 import webbrowser
 from pathlib import Path
-import shlex
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QGuiApplication, QIcon
@@ -47,6 +46,7 @@ from actions import (
 )
 from config import AppConfig, HostConfig, normalize_profile_name, save_config
 from models import ActionResult, ActionStatus
+from platform_support import LocalPlatformAdapter
 from ssh_runner import SSHRunner
 
 
@@ -125,10 +125,17 @@ class HostProfileDialog(QDialog):
         self.display_name_input = QLineEdit(self.profile.display_name)
         self.remote_host_input = QLineEdit(self.profile.remote_host)
         self.remote_user_input = QLineEdit(self.profile.remote_user)
+        self.auth_method_input = QComboBox()
+        self.auth_method_input.addItem("私钥", "key")
+        self.auth_method_input.addItem("账户密码", "password")
+        current_auth_index = max(0, self.auth_method_input.findData(self.profile.ssh_auth_method))
+        self.auth_method_input.setCurrentIndex(current_auth_index)
         self.identity_only_input = QCheckBox()
         self.identity_only_input.setChecked(self.profile.ssh_identities_only)
         self.identity_file_input = QLineEdit(self.profile.ssh_identity_file)
         self.ssh_config_input = QLineEdit(self.profile.ssh_config_path)
+        self.password_input = QLineEdit(self.profile.ssh_password)
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.command_timeout_input = QSpinBox()
         self.command_timeout_input.setRange(1, 7200)
         self.command_timeout_input.setValue(self.profile.command_timeout_seconds)
@@ -146,9 +153,16 @@ class HostProfileDialog(QDialog):
         form.addRow("显示名称", self.display_name_input)
         form.addRow("SSH 目标", self.remote_host_input)
         form.addRow("远程用户", self.remote_user_input)
-        form.addRow("强制 IdentitiesOnly", self.identity_only_input)
-        form.addRow("私钥路径", self.identity_file_input)
-        form.addRow("SSH 配置路径", self.ssh_config_input)
+        self.auth_method_row = QLabel("认证方式")
+        form.addRow(self.auth_method_row, self.auth_method_input)
+        self.identity_only_row = QLabel("强制 IdentitiesOnly")
+        self.identity_file_row = QLabel("私钥路径")
+        self.ssh_config_row = QLabel("SSH 配置路径")
+        self.password_row = QLabel("登录密码")
+        form.addRow(self.identity_only_row, self.identity_only_input)
+        form.addRow(self.identity_file_row, self.identity_file_input)
+        form.addRow(self.ssh_config_row, self.ssh_config_input)
+        form.addRow(self.password_row, self.password_input)
         form.addRow("命令超时秒数", self.command_timeout_input)
         form.addRow("gateway 探活秒数", self.gateway_timeout_input)
         form.addRow("远端 WebUI 端口", self.gateway_web_port_input)
@@ -165,6 +179,8 @@ class HostProfileDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.auth_method_input.currentIndexChanged.connect(self._update_auth_fields)
+        self._update_auth_fields()
 
     def profile_data(self) -> HostConfig:
         profile_name = normalize_profile_name(self.profile_name_input.text())
@@ -173,9 +189,11 @@ class HostProfileDialog(QDialog):
             display_name=self.display_name_input.text().strip() or profile_name,
             remote_host=self.remote_host_input.text().strip(),
             remote_user=self.remote_user_input.text().strip() or self.profile.remote_user,
+            ssh_auth_method=str(self.auth_method_input.currentData() or "key"),
             ssh_identities_only=self.identity_only_input.isChecked(),
             ssh_identity_file=self.identity_file_input.text().strip(),
             ssh_config_path=self.ssh_config_input.text().strip(),
+            ssh_password=self.password_input.text(),
             remote_path_prefix=self.profile.remote_path_prefix,
             openclaw_repo_url=self.profile.openclaw_repo_url,
             remote_workdir=self.profile.remote_workdir,
@@ -185,6 +203,18 @@ class HostProfileDialog(QDialog):
             gateway_web_port=self.gateway_web_port_input.value(),
             local_forward_port=self.local_forward_port_input.value(),
         )
+
+    def _update_auth_fields(self) -> None:
+        auth_method = str(self.auth_method_input.currentData() or "key")
+        use_password = auth_method == "password"
+        self.identity_only_row.setVisible(not use_password)
+        self.identity_only_input.setVisible(not use_password)
+        self.identity_file_row.setVisible(not use_password)
+        self.identity_file_input.setVisible(not use_password)
+        self.ssh_config_row.setVisible(not use_password)
+        self.ssh_config_input.setVisible(not use_password)
+        self.password_row.setVisible(use_password)
+        self.password_input.setVisible(use_password)
 
     def _test_connection(self) -> None:
         if self.test_in_progress:
@@ -307,6 +337,8 @@ class OpenClawDesktopApp(QMainWindow):
         self.worker: ActionWorker | None = None
         self.current_task_value = "空闲"
         self.current_status_value = "Idle"
+        self.current_local_platform_value = self._compute_local_platform()
+        self.current_remote_platform_value = "未检测"
         self.current_version_value = "-"
         self.last_result_value = "-"
         self.current_localhost_url_value = get_localhost_access_url(config) or "-"
@@ -355,17 +387,21 @@ class OpenClawDesktopApp(QMainWindow):
 
         self.target_host_label = QLabel(self.config.remote_host)
         self.current_status_label = QLabel(self.current_status_value)
+        self.local_platform_label = QLabel(self.current_local_platform_value)
+        self.remote_platform_label = QLabel(self.current_remote_platform_value)
         self.current_version_label = QLabel(self.current_version_value)
         self.last_result_label = QLabel(self.last_result_value)
         self.localhost_status_label = QLabel(self.current_localhost_status_value)
         self.localhost_url_label = QLabel(self.current_localhost_url_value)
         self._add_info_row(top_layout, 0, "当前主机", selector_row)
         self._add_info_row(top_layout, 1, "目标主机", self.target_host_label)
-        self._add_info_row(top_layout, 2, "当前状态", self.current_status_label)
-        self._add_info_row(top_layout, 3, "当前 OpenClaw 版本", self.current_version_label)
-        self._add_info_row(top_layout, 4, "localhost 状态", self.localhost_status_label)
-        self._add_info_row(top_layout, 5, "localhost 地址", self.localhost_url_label)
-        self._add_info_row(top_layout, 6, "最近一次操作结果", self.last_result_label)
+        self._add_info_row(top_layout, 2, "当前主机平台", self.local_platform_label)
+        self._add_info_row(top_layout, 3, "远端主机平台", self.remote_platform_label)
+        self._add_info_row(top_layout, 4, "当前状态", self.current_status_label)
+        self._add_info_row(top_layout, 5, "当前 OpenClaw 版本", self.current_version_label)
+        self._add_info_row(top_layout, 6, "localhost 状态", self.localhost_status_label)
+        self._add_info_row(top_layout, 7, "localhost 地址", self.localhost_url_label)
+        self._add_info_row(top_layout, 8, "最近一次操作结果", self.last_result_label)
         layout.addWidget(top_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -711,6 +747,9 @@ class OpenClawDesktopApp(QMainWindow):
         self._set_controls_enabled(True)
         self.current_task_value = "空闲"
         self.current_status_value = result.status.value.title()
+        remote_platform = self._extract_remote_platform(result)
+        if remote_platform is not None:
+            self.current_remote_platform_value = remote_platform
         self.current_version_value = self._extract_version(result)
         self.last_result_value = result.message or result.status.value
         localhost_url = self._extract_localhost_url(result)
@@ -772,6 +811,18 @@ class OpenClawDesktopApp(QMainWindow):
                 return str(version)
         return self.current_version_value
 
+    def _extract_remote_platform(self, result: ActionResult) -> str | None:
+        if isinstance(result.summary, dict):
+            remote_platform = result.summary.get("remote_platform")
+            if isinstance(remote_platform, str) and remote_platform:
+                return self._format_platform_name(remote_platform)
+            diagnose = result.summary.get("diagnose")
+            if isinstance(diagnose, dict):
+                remote_platform = diagnose.get("remote_platform")
+                if isinstance(remote_platform, str) and remote_platform:
+                    return self._format_platform_name(remote_platform)
+        return None
+
     def _extract_localhost_url(self, result: ActionResult) -> str | None:
         if isinstance(result.summary, dict) and "localhost_url" in result.summary:
             value = str(result.summary.get("localhost_url") or "").strip()
@@ -811,6 +862,7 @@ class OpenClawDesktopApp(QMainWindow):
     def _reset_profile_state(self) -> None:
         self.current_task_value = "空闲"
         self.current_status_value = "Idle"
+        self.current_remote_platform_value = "未检测"
         self.current_version_value = "-"
         self.last_result_value = "-"
         self.current_localhost_url_value = get_localhost_access_url(self.config) or "-"
@@ -827,6 +879,8 @@ class OpenClawDesktopApp(QMainWindow):
         self.target_host_label.setText(self.config.remote_host)
         self.current_task_label.setText(f"当前任务: {self.current_task_value}")
         self.current_status_label.setText(self.current_status_value)
+        self.local_platform_label.setText(self.current_local_platform_value)
+        self.remote_platform_label.setText(self.current_remote_platform_value)
         self.current_version_label.setText(self.current_version_value)
         self.localhost_status_label.setText(self.current_localhost_status_value)
         self.localhost_url_label.setText(self.current_localhost_url_value)
@@ -863,24 +917,30 @@ class OpenClawDesktopApp(QMainWindow):
     def _compute_localhost_status(self, localhost_url: str) -> str:
         return "已开启" if localhost_url and localhost_url != "-" else "未开启"
 
+    def _compute_local_platform(self) -> str:
+        return self._format_platform_name(sys.platform)
+
+    def _format_platform_name(self, platform_name: str) -> str:
+        normalized = platform_name.strip().lower()
+        if normalized == "darwin" or normalized == "macos":
+            return "macOS"
+        if normalized.startswith("win"):
+            return "Windows"
+        if normalized == "linux":
+            return "Linux"
+        if normalized == "unknown":
+            return "Unknown"
+        return platform_name
+
     def open_logs_dir(self) -> None:
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(["open", str(self.config.logs_dir.resolve())])
+        command = LocalPlatformAdapter.for_platform(sys.platform).open_path_command(self.config.logs_dir)
+        subprocess.Popen(command)
 
     def open_ssh_terminal(self) -> None:
-        if sys.platform != "darwin":
-            QMessageBox.information(self, "暂不支持", "当前仅支持在 macOS 上自动打开已连接的 SSH 终端。")
-            return
-        ssh_command = shlex.join([*SSHRunner(self.config).build_ssh_base_command(), self.config.remote_host])
-        script_command = ssh_command.replace("\\", "\\\\").replace('"', '\\"')
-        apple_script = [
-            "osascript",
-            "-e",
-            'tell application "Terminal" to activate',
-            "-e",
-            f'tell application "Terminal" to do script "{script_command}"',
-        ]
-        subprocess.Popen(apple_script)
+        ssh_command = SSHRunner(self.config).build_interactive_ssh_command()
+        command = LocalPlatformAdapter.for_platform(sys.platform).open_ssh_terminal_command(ssh_command)
+        subprocess.Popen(command)
 
     def show_official_commands(self) -> None:
         dialog = QDialog(self)

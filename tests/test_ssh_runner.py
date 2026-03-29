@@ -108,6 +108,32 @@ def test_build_tunnel_command_uses_local_forwarding():
     ]
 
 
+def test_build_interactive_ssh_command_supports_password_auth():
+    config = AppConfig(
+        profiles={
+            PRIMARY_PROFILE_NAME: HostConfig(
+                remote_host="ops@example-host.local",
+                ssh_auth_method="password",
+                ssh_config_path="",
+            ),
+        }
+    )
+    runner = SSHRunner(config)
+
+    command = runner.build_interactive_ssh_command()
+
+    assert command == [
+        "ssh",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=1",
+        "ops@example-host.local",
+    ]
+
+
 def test_detect_ssh_issue_for_password_prompt():
     message = detect_ssh_issue(255, "Permission denied, please try again.\npassword:", False)
     assert message == "ssh authentication failed or requires interactive password input"

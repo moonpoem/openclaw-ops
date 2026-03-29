@@ -84,6 +84,7 @@ def test_handle_result_extracts_version_from_connection_check(monkeypatch):
         summary={
             "connected": True,
             "target_host": "smarthost.local",
+            "remote_platform": "linux",
             "diagnose": {
                 "openclaw_version": "OpenClaw 2026.3.28 (f9b1079)",
                 "current_version_normalized": "2026.3.28",
@@ -100,6 +101,15 @@ def test_handle_result_extracts_version_from_connection_check(monkeypatch):
     window.handle_result(result)
 
     assert window.current_version_label.text() == "OpenClaw 2026.3.28 (f9b1079)"
+    assert window.remote_platform_label.text() == "Linux"
+    window.close()
+
+
+def test_window_shows_local_platform_and_remote_platform_defaults():
+    window = make_window()
+
+    assert window.local_platform_label.text() in {"macOS", "Windows", "Linux"}
+    assert window.remote_platform_label.text() == "未检测"
     window.close()
 
 
@@ -246,6 +256,7 @@ def test_start_action_respects_danger_confirmation(monkeypatch):
 def test_switch_profile_updates_target_host_and_resets_state():
     window = make_window()
     window.current_status_value = "Success"
+    window.current_remote_platform_value = "Linux"
     window.current_version_value = "1.2.3"
     window.last_result_value = "ok"
     window._refresh_status_labels()
@@ -256,6 +267,7 @@ def test_switch_profile_updates_target_host_and_resets_state():
     assert window.target_host_label.text() == "ops@staging.example.com"
     assert window.current_status_label.text() == "Idle"
     assert window.status_light_color == "#9ca3af"
+    assert window.remote_platform_label.text() == "未检测"
     assert window.current_version_label.text() == "-"
     assert window.last_result_label.text() == "-"
     window.close()
@@ -379,6 +391,41 @@ def test_open_ssh_terminal_launches_terminal(monkeypatch):
     assert "ssh" in commands[0][4]
     assert window.config.remote_host in commands[0][4]
     window.close()
+
+
+def test_open_ssh_terminal_supports_windows(monkeypatch):
+    window = make_window()
+    commands = []
+    monkeypatch.setattr(ui.sys, "platform", "win32")
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda command: commands.append(command))
+
+    window.open_ssh_terminal()
+
+    assert commands == [[
+        "cmd",
+        "/c",
+        "start",
+        "",
+        "powershell",
+        "-NoExit",
+        "-Command",
+        f"ssh -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o IdentitiesOnly=yes -i /Users/moon/.ssh/id_ed25519 -F /Users/moon/.ssh/config {window.config.remote_host}",
+    ]]
+    window.close()
+
+
+def test_host_profile_dialog_supports_password_auth_fields(tmp_path):
+    get_qapp()
+    dialog = HostProfileDialog(None, HostConfig(ssh_auth_method="password", ssh_password="secret123"), creating=True, logs_dir=tmp_path)
+
+    assert dialog.auth_method_input.currentData() == "password"
+    assert dialog.password_input.isHidden() is False
+    assert dialog.identity_file_input.isHidden() is True
+
+    profile = dialog.profile_data()
+    assert profile.ssh_auth_method == "password"
+    assert profile.ssh_password == "secret123"
+    dialog.close()
 
 
 def test_show_official_commands_opens_dialog(monkeypatch):

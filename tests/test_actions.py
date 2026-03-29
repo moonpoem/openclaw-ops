@@ -34,6 +34,8 @@ class FakeRunner:
 def test_check_connection_returns_structured_result(monkeypatch, tmp_path):
     results = [
         CommandResult("hostname", ["ssh", "ops@example-host.local", "hostname"], 0, "example-host\n", "", 0.1),
+        CommandResult("uname -s 2>/dev/null || echo unknown", [], 0, "Darwin\n", "", 0.1),
+        CommandResult("uname -s 2>/dev/null || echo unknown", [], 0, "Darwin\n", "", 0.1),
         CommandResult("printf '%s\n' \"$PATH\"", [], 0, "/usr/bin\n", "", 0.1),
         CommandResult("node -v", [], 0, "v20.0.0\n", "", 0.1),
         CommandResult("npm -v", [], 0, "10.0.0\n", "", 0.1),
@@ -69,6 +71,7 @@ def test_check_connection_returns_structured_result(monkeypatch, tmp_path):
     action_result = check_connection(config)
     assert action_result.status == ActionStatus.SUCCESS
     assert action_result.summary["target_host"] == "example-host"
+    assert action_result.summary["remote_platform"] == "macos"
     assert Path(action_result.log_path).exists()
 
 
@@ -811,6 +814,7 @@ def test_diagnose_environment_warns_when_upgrade_is_needed(monkeypatch, tmp_path
     class FakeRunner:
         def __init__(self, config):
             self.results = [
+                CommandResult("uname -s 2>/dev/null || echo unknown", [], 0, "Linux\n", "", 0.1),
                 CommandResult("printf '%s\n' \"$PATH\"", [], 0, "/usr/bin\n", "", 0.1),
                 CommandResult("node -v", [], 0, "v20.0.0\n", "", 0.1),
                 CommandResult("npm -v", [], 0, "10.0.0\n", "", 0.1),
@@ -836,6 +840,25 @@ def test_diagnose_environment_warns_when_upgrade_is_needed(monkeypatch, tmp_path
 
     assert result.status == ActionStatus.WARNING
     assert result.message == "需升级"
+    assert result.summary["remote_platform"] == "linux"
     assert result.summary["current_version_normalized"] == "2026.3.23-2"
     assert result.summary["latest_version_normalized"] == "2026.3.24-1"
     assert result.summary["up_to_date"] is False
+
+
+def test_fix_npm_environment_uses_current_remote_group(monkeypatch, tmp_path):
+    commands = []
+
+    class RecordingRunner:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            commands.append(remote_command)
+            return CommandResult(remote_command, [], 0, "", "", 0.1)
+
+    monkeypatch.setattr(actions, "SSHRunner", RecordingRunner)
+    result = actions.fix_npm_environment(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.SUCCESS
+    assert commands[0] == 'if [ -d "$HOME/.npm" ]; then chown -R "$(id -un)":"$(id -gn)" "$HOME/.npm"; else echo \'~/.npm missing\'; fi'

@@ -96,9 +96,11 @@ class HostConfig:
     remote_host: str = "ops@example-host.local"
     remote_path_prefix: str = "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH;"
     remote_user: str = "ops"
+    ssh_auth_method: str = "key"
     ssh_identities_only: bool = True
     ssh_identity_file: str = "~/.ssh/id_ed25519"
     ssh_config_path: str = "~/.ssh/config"
+    ssh_password: str = ""
     openclaw_repo_url: str = "https://github.com/example/openclaw.git"
     remote_workdir: str = "$HOME/openclaw-src"
     npm_global_root: str = "/opt/homebrew/lib/node_modules"
@@ -185,12 +187,20 @@ class AppConfig:
         return self.active_profile.ssh_identities_only
 
     @property
+    def ssh_auth_method(self) -> str:
+        return self.active_profile.ssh_auth_method
+
+    @property
     def ssh_identity_file(self) -> str:
         return self.active_profile.ssh_identity_file
 
     @property
     def ssh_config_path(self) -> str:
         return self.active_profile.ssh_config_path
+
+    @property
+    def ssh_password(self) -> str:
+        return self.active_profile.ssh_password
 
     @property
     def openclaw_repo_url(self) -> str:
@@ -236,12 +246,14 @@ def _host_from_values(values: dict[str, str], prefix: str, profile_name: str, de
         remote_host=values.get(f"{prefix}REMOTE_HOST", defaults.remote_host),
         remote_path_prefix=values.get(f"{prefix}REMOTE_PATH_PREFIX", defaults.remote_path_prefix),
         remote_user=values.get(f"{prefix}REMOTE_USER", defaults.remote_user),
+        ssh_auth_method=values.get(f"{prefix}SSH_AUTH_METHOD", defaults.ssh_auth_method),
         ssh_identities_only=_parse_bool(
             values.get(f"{prefix}SSH_IDENTITIES_ONLY"),
             defaults.ssh_identities_only,
         ),
         ssh_identity_file=values.get(f"{prefix}SSH_IDENTITY_FILE", defaults.ssh_identity_file),
         ssh_config_path=values.get(f"{prefix}SSH_CONFIG_PATH", defaults.ssh_config_path),
+        ssh_password=values.get(f"{prefix}SSH_PASSWORD", defaults.ssh_password),
         openclaw_repo_url=values.get(f"{prefix}OPENCLAW_REPO_URL", defaults.openclaw_repo_url),
         remote_workdir=values.get(f"{prefix}REMOTE_WORKDIR", defaults.remote_workdir),
         npm_global_root=values.get(f"{prefix}NPM_GLOBAL_ROOT", defaults.npm_global_root),
@@ -314,9 +326,11 @@ def save_config(config: AppConfig, env_path: str | os.PathLike[str] | None = Non
         f"REMOTE_HOST={primary_profile.remote_host}",
         f"REMOTE_PATH_PREFIX={primary_profile.remote_path_prefix}",
         f"REMOTE_USER={primary_profile.remote_user}",
+        f"SSH_AUTH_METHOD={primary_profile.ssh_auth_method}",
         f"SSH_IDENTITIES_ONLY={_format_bool(primary_profile.ssh_identities_only)}",
         f"SSH_IDENTITY_FILE={primary_profile.ssh_identity_file}",
         f"SSH_CONFIG_PATH={primary_profile.ssh_config_path}",
+        f"SSH_PASSWORD={primary_profile.ssh_password}",
         f"OPENCLAW_REPO_URL={primary_profile.openclaw_repo_url}",
         f"REMOTE_WORKDIR={primary_profile.remote_workdir}",
         f"NPM_GLOBAL_ROOT={primary_profile.npm_global_root}",
@@ -338,9 +352,11 @@ def save_config(config: AppConfig, env_path: str | os.PathLike[str] | None = Non
                 f"{prefix}REMOTE_HOST={profile.remote_host}",
                 f"{prefix}REMOTE_PATH_PREFIX={profile.remote_path_prefix}",
                 f"{prefix}REMOTE_USER={profile.remote_user}",
+                f"{prefix}SSH_AUTH_METHOD={profile.ssh_auth_method}",
                 f"{prefix}SSH_IDENTITIES_ONLY={_format_bool(profile.ssh_identities_only)}",
                 f"{prefix}SSH_IDENTITY_FILE={profile.ssh_identity_file}",
                 f"{prefix}SSH_CONFIG_PATH={profile.ssh_config_path}",
+                f"{prefix}SSH_PASSWORD={profile.ssh_password}",
                 f"{prefix}OPENCLAW_REPO_URL={profile.openclaw_repo_url}",
                 f"{prefix}REMOTE_WORKDIR={profile.remote_workdir}",
                 f"{prefix}NPM_GLOBAL_ROOT={profile.npm_global_root}",

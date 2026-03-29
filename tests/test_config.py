@@ -9,6 +9,8 @@ def test_load_config_supports_multiple_profiles(tmp_path):
             [
                 "DISPLAY_NAME=示例主机",
                 "REMOTE_HOST=ops@example-host.local",
+                "SSH_AUTH_METHOD=password",
+                "SSH_PASSWORD=secret123",
                 "SSH_IDENTITY_FILE=~/.ssh/id_ed25519",
                 "PROFILE_NAMES=staging",
                 "ACTIVE_PROFILE=staging",
@@ -28,6 +30,8 @@ def test_load_config_supports_multiple_profiles(tmp_path):
     assert config.selected_profile == "staging"
     assert config.profile_names == [PRIMARY_PROFILE_NAME, "staging"]
     assert config.profiles[PRIMARY_PROFILE_NAME].display_name == "示例主机"
+    assert config.profiles[PRIMARY_PROFILE_NAME].ssh_auth_method == "password"
+    assert config.profiles[PRIMARY_PROFILE_NAME].ssh_password == "secret123"
     assert config.profiles["staging"].remote_host == "ops@staging.example.com"
     assert config.remote_host == "ops@staging.example.com"
     assert config.remote_user == "ops"
@@ -54,6 +58,7 @@ def test_save_config_round_trip(tmp_path):
     assert reloaded.selected_profile == "staging"
     assert reloaded.profiles["staging"].display_name == "预发布环境"
     assert reloaded.profiles["staging"].remote_host == "ops@staging.example.com"
+    assert reloaded.profiles["staging"].ssh_auth_method == "key"
     assert reloaded.profiles["staging"].gateway_web_port == 18789
     assert reloaded.profiles["staging"].local_forward_port == 18789
 
