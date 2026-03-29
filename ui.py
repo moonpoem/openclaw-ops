@@ -779,6 +779,8 @@ class OpenClawDesktopApp(QMainWindow):
         return None
 
     def _extract_localhost_launch_url(self, result: ActionResult) -> str | None:
+        if result.launch_url:
+            return result.launch_url.strip()
         if isinstance(result.summary, dict) and "launch_url" in result.summary:
             value = str(result.summary.get("launch_url") or "").strip()
             return value

@@ -152,19 +152,35 @@ def _verify_openclaw_with_runner(
         if step.command_result.ssh_issue:
             reasons.append(step.command_result.ssh_issue)
 
+    advice: list[str] = []
+    if "gateway token mismatch" in reasons:
+        advice.append("重新打开 localhost WebUI 以刷新当前 token")
+        advice.append("如果仍然失败，重新生成 gateway token 后再打开 WebUI")
+    elif "gateway token missing" in reasons:
+        advice.append("先生成或配置 gateway token，再重新打开 localhost WebUI")
+
     if not reasons:
         status = ActionStatus.SUCCESS
         verdict = "Healthy"
+        message = "Healthy"
     elif has_assets_issue or any("failed" in r for r in reasons):
         status = ActionStatus.FAILED
         verdict = "Failed"
+        message = "Failed"
     else:
         status = ActionStatus.WARNING
         verdict = "Warning"
+        if "gateway token mismatch" in reasons:
+            message = "WebUI token 不匹配，请重新打开 localhost WebUI"
+        elif "gateway token missing" in reasons:
+            message = "缺少 gateway token"
+        else:
+            message = "Warning"
 
     summary = {
         "verdict": verdict,
         "reasons": reasons,
+        "advice": advice,
         "details": outputs,
     }
     finished_at = now_iso()
@@ -176,7 +192,7 @@ def _verify_openclaw_with_runner(
         duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
         steps=steps,
         summary=summary,
-        message=verdict,
+        message=message,
     )
 
 
@@ -641,7 +657,7 @@ def prepare_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult
                 message="未能获取 gateway token",
             )
 
-        launch_url = f"{localhost_url}#token={token}"
+        launch_url = f"{localhost_url}?openclaw_ui_refresh={int(time.time())}#token={token}"
         return ActionResult(
             action_name="打开 localhost WebUI",
             status=ActionStatus.SUCCESS,
@@ -653,9 +669,9 @@ def prepare_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult
                 "localhost_url": localhost_url,
                 "token_ready": True,
                 "token_generated": generated,
-                "launch_url": launch_url,
             },
             message="localhost WebUI 已准备好",
+            launch_url=launch_url,
         )
 
     return run_action("打开 localhost WebUI", config, ui_callback, worker)
@@ -707,7 +723,7 @@ def open_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult:
                 message="未能获取 gateway token",
             )
 
-        launch_url = f"{localhost_url}#token={token}"
+        launch_url = f"{localhost_url}?openclaw_ui_refresh={int(time.time())}#token={token}"
         return ActionResult(
             action_name="打开 localhost WebUI",
             status=ActionStatus.SUCCESS,
@@ -720,9 +736,9 @@ def open_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult:
                 "token_ready": True,
                 "token_generated": generated,
                 "access_started": access_started,
-                "launch_url": launch_url,
             },
             message="localhost WebUI 已准备好",
+            launch_url=launch_url,
         )
 
     return run_action("打开 localhost WebUI", config, ui_callback, worker)

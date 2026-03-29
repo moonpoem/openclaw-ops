@@ -44,6 +44,7 @@ class ActionResult:
     summary: dict[str, Any] = field(default_factory=dict)
     log_path: str = ""
     message: str = ""
+    launch_url: str = ""
 
 
 @dataclass
@@ -51,4 +52,3 @@ class ActionContext:
     action_name: str
     log_path: str
     started_at: str
-

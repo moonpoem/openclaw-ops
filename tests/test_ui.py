@@ -170,13 +170,13 @@ def test_handle_result_opens_localhost_launch_url(monkeypatch):
             duration_seconds=0.2,
             summary={
                 "localhost_url": "http://127.0.0.1:18789",
-                "launch_url": "http://127.0.0.1:18789#token=abc123",
             },
             message="localhost WebUI 已准备好",
+            launch_url="http://127.0.0.1:18789?openclaw_ui_refresh=123#token=abc123",
         )
     )
 
-    assert opened == ["http://127.0.0.1:18789#token=abc123"]
+    assert opened == ["http://127.0.0.1:18789?openclaw_ui_refresh=123#token=abc123"]
     window.close()
 
 

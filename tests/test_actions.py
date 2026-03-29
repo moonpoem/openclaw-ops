@@ -531,6 +531,46 @@ def test_verify_openclaw_warns_when_gateway_token_missing_in_current_status(monk
     assert result.status == ActionStatus.WARNING
     assert result.summary["verdict"] == "Warning"
     assert result.summary["reasons"] == ["gateway token missing"]
+    assert result.summary["advice"] == ["先生成或配置 gateway token，再重新打开 localhost WebUI"]
+    assert result.message == "缺少 gateway token"
+
+
+def test_verify_openclaw_warns_with_actionable_token_mismatch(monkeypatch, tmp_path):
+    class FakeRunner:
+        def __init__(self, config):
+            self.results = [
+                CommandResult("node -v", [], 0, "v23.9.0\n", "", 0.1),
+                CommandResult("npm -v", [], 0, "10.9.2\n", "", 0.1),
+                CommandResult("which openclaw", [], 0, "/opt/homebrew/bin/openclaw\n", "", 0.1),
+                CommandResult("openclaw --version", [], 0, "OpenClaw 2026.3.28 (f9b1079)\n", "", 0.1),
+                CommandResult(
+                    "openclaw status --all",
+                    [],
+                    0,
+                    "Gateway last log line:\n"
+                    "  unauthorized: gateway token mismatch (open the dashboard URL and paste the token in Control UI settings)\n",
+                    "",
+                    0.2,
+                ),
+                CommandResult("openclaw health --json", [], 0, '{"ok":true}\n', "", 0.2),
+            ]
+
+        def run(self, remote_command, timeout_seconds=None, stream_callback=None):
+            result = self.results.pop(0)
+            if stream_callback:
+                stream_callback("stdout", result.stdout)
+            return result
+
+    monkeypatch.setattr(actions, "SSHRunner", FakeRunner)
+    result = verify_openclaw(AppConfig(logs_dir=tmp_path))
+
+    assert result.status == ActionStatus.WARNING
+    assert result.summary["reasons"] == ["gateway token mismatch"]
+    assert result.summary["advice"] == [
+        "重新打开 localhost WebUI 以刷新当前 token",
+        "如果仍然失败，重新生成 gateway token 后再打开 WebUI",
+    ]
+    assert result.message == "WebUI token 不匹配，请重新打开 localhost WebUI"
 
 
 def test_start_localhost_access_creates_tunnel_state(monkeypatch, tmp_path):
@@ -656,7 +696,8 @@ def test_prepare_localhost_webui_uses_gateway_token(monkeypatch, tmp_path):
 
     assert result.status == ActionStatus.SUCCESS
     assert result.summary["token_ready"] is True
-    assert result.summary["launch_url"] == "http://127.0.0.1:18789#token=abc123"
+    assert result.launch_url.startswith("http://127.0.0.1:18789?openclaw_ui_refresh=")
+    assert result.launch_url.endswith("#token=abc123")
 
 
 def test_repair_and_upgrade_stops_without_cleanup_on_ssh_failure(monkeypatch, tmp_path):
