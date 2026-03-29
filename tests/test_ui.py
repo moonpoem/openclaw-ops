@@ -52,7 +52,7 @@ def test_handle_result_updates_status_and_version(monkeypatch):
         started_at="2026-03-24T22:00:00",
         finished_at="2026-03-24T22:00:08",
         duration_seconds=8,
-        summary={"details": {"openclaw_version": "1.2.3"}, "reasons": ["gateway probe timed out"]},
+        summary={"details": {"openclaw_version": "1.2.3"}, "reasons": ["gateway token missing"]},
         log_path="/tmp/test.log",
         message="Warning",
     )
@@ -66,8 +66,40 @@ def test_handle_result_updates_status_and_version(monkeypatch):
     assert window.current_version_label.text() == "1.2.3"
     assert window.last_result_label.text() == "Warning"
     assert window.last_log_path_value == "/tmp/test.log"
-    assert "gateway probe timed out" in window.summary_text.toPlainText()
-    assert warnings == [("操作完成，但有告警", window.summary_text.toPlainText())]
+    assert "gateway token missing" in window.summary_text.toPlainText()
+    assert warnings == []
+    window.close()
+
+
+def test_handle_result_extracts_version_from_connection_check(monkeypatch):
+    window = make_window()
+    monkeypatch.setattr(ui.QMessageBox, "warning", lambda *args: None)
+    monkeypatch.setattr(ui.QMessageBox, "critical", lambda *args: None)
+    result = ActionResult(
+        action_name="连接检查",
+        status=ActionStatus.SUCCESS,
+        started_at="2026-03-29T21:00:00",
+        finished_at="2026-03-29T21:00:23",
+        duration_seconds=22.9,
+        summary={
+            "connected": True,
+            "target_host": "smarthost.local",
+            "diagnose": {
+                "openclaw_version": "OpenClaw 2026.3.28 (f9b1079)",
+                "current_version_normalized": "2026.3.28",
+            },
+            "verify": {
+                "details": {
+                    "openclaw_version": "OpenClaw 2026.3.28 (f9b1079)",
+                }
+            },
+        },
+        message="连接检查完成",
+    )
+
+    window.handle_result(result)
+
+    assert window.current_version_label.text() == "OpenClaw 2026.3.28 (f9b1079)"
     window.close()
 
 
@@ -96,7 +128,7 @@ def test_handle_result_shows_need_upgrade_in_last_result(monkeypatch):
 
     assert window.last_result_label.text() == "需升级"
     assert window.status_light_color == "#eab308"
-    assert warnings and warnings[0][0] == "操作完成，但有告警"
+    assert warnings == []
     window.close()
 
 
@@ -118,6 +150,33 @@ def test_handle_result_updates_localhost_url(monkeypatch):
     )
 
     assert window.localhost_url_label.text() == "http://127.0.0.1:18789"
+    assert window.localhost_status_label.text() == "已开启"
+    window.close()
+
+
+def test_handle_result_opens_localhost_launch_url(monkeypatch):
+    window = make_window()
+    opened = []
+    monkeypatch.setattr(ui.QMessageBox, "warning", lambda *args: None)
+    monkeypatch.setattr(ui.QMessageBox, "critical", lambda *args: None)
+    monkeypatch.setattr(ui.webbrowser, "open", lambda url: opened.append(url))
+
+    window.handle_result(
+        ActionResult(
+            action_name="打开 localhost WebUI",
+            status=ActionStatus.SUCCESS,
+            started_at="2026-03-29T10:00:00",
+            finished_at="2026-03-29T10:00:01",
+            duration_seconds=0.2,
+            summary={
+                "localhost_url": "http://127.0.0.1:18789",
+                "launch_url": "http://127.0.0.1:18789#token=abc123",
+            },
+            message="localhost WebUI 已准备好",
+        )
+    )
+
+    assert opened == ["http://127.0.0.1:18789#token=abc123"]
     window.close()
 
 
@@ -244,41 +303,149 @@ def test_primary_action_buttons_are_streamlined():
     labels = [button.text() for button in window.buttons]
 
     assert "连接检查" in labels
-    assert "环境诊断" in labels
-    assert "启动 OpenClaw" in labels
-    assert "停止 OpenClaw" in labels
-    assert "重启 OpenClaw" in labels
-    assert "开启 localhost 访问" in labels
+    assert "打开 localhost WebUI" in labels
     assert "关闭 localhost 访问" in labels
     assert "OpenClaw 自我修复 (危险)" in labels
-    assert "修复并升级 (危险)" in labels
+    assert "一键升级并启动 (危险)" in labels
     assert "验证 OpenClaw" in labels
     assert "源码构建兜底 (危险)" in labels
     assert "最新版检查" not in labels
     assert "修复 npm 环境 (危险)" not in labels
     assert "清理 OpenClaw 残留 (危险)" not in labels
     assert "升级 OpenClaw (危险)" not in labels
-    assert "一键修复并升级 (危险)" not in labels
+    assert "启动 OpenClaw" not in labels
+    assert "停止 OpenClaw" not in labels
+    assert "重启 OpenClaw" not in labels
+    assert "修复并升级 (危险)" not in labels
     window.close()
 
 
 def test_primary_action_buttons_follow_grouped_order():
     window = make_window()
 
-    labels = [button.text() for button in window.buttons[:10]]
+    labels = [button.text() for button in window.buttons[:5]]
 
     assert labels == [
         "连接检查",
+        "打开 localhost WebUI",
+        "OpenClaw 自我修复 (危险)",
+        "一键升级并启动 (危险)",
+        "关闭 localhost 访问",
+    ]
+    window.close()
+
+
+def test_advanced_and_known_issue_buttons_exist_in_collapsed_sections():
+    window = make_window()
+
+    labels = [button.text() for button in window.buttons]
+
+    assert labels == [
+        "连接检查",
+        "打开 localhost WebUI",
+        "OpenClaw 自我修复 (危险)",
+        "一键升级并启动 (危险)",
+        "关闭 localhost 访问",
+        "打开日志目录",
+        "复制最近摘要",
+        "打开 SSH 终端",
+        "OpenClaw 官方命令",
         "环境诊断",
         "验证 OpenClaw",
-        "启动 OpenClaw",
-        "停止 OpenClaw",
-        "重启 OpenClaw",
-        "开启 localhost 访问",
-        "关闭 localhost 访问",
-        "OpenClaw 自我修复 (危险)",
-        "修复并升级 (危险)",
+        "源码构建兜底 (危险)",
     ]
+    window.close()
+
+
+def test_buttons_have_roomier_spacing():
+    window = make_window()
+
+    assert window.buttons[0].minimumHeight() == 34
+
+    window.close()
+
+
+def test_open_ssh_terminal_launches_terminal(monkeypatch):
+    window = make_window()
+    commands = []
+    monkeypatch.setattr(ui.sys, "platform", "darwin")
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda command: commands.append(command))
+
+    window.open_ssh_terminal()
+
+    assert commands
+    assert commands[0][0] == "osascript"
+    assert "Terminal" in commands[0][2]
+    assert "ssh" in commands[0][4]
+    assert window.config.remote_host in commands[0][4]
+    window.close()
+
+
+def test_show_official_commands_opens_dialog(monkeypatch):
+    window = make_window()
+    executed = []
+
+    class FakeDialog:
+        def __init__(self, parent=None):
+            self.parent = parent
+
+        def setWindowTitle(self, title):
+            self.title = title
+
+        def resize(self, width, height):
+            self.size = (width, height)
+
+        def reject(self):
+            pass
+
+        def accept(self):
+            pass
+
+        def exec(self):
+            executed.append((self.title, self.size))
+
+    class FakeTextEdit:
+        def setReadOnly(self, value):
+            self.read_only = value
+
+        def setPlainText(self, value):
+            self.value = value
+
+    class FakeLayout:
+        def __init__(self, parent=None):
+            self.widgets = []
+
+        def addWidget(self, widget):
+            self.widgets.append(widget)
+
+    class FakeButtons:
+        class StandardButton:
+            Close = object()
+
+        class _Signal:
+            def connect(self, callback):
+                self.callback = callback
+
+        class _FakeButton:
+            def __init__(self):
+                self.clicked = FakeButtons._Signal()
+
+        def __init__(self, *_args, **_kwargs):
+            self.accepted = self._Signal()
+            self.rejected = self._Signal()
+            self._button = self._FakeButton()
+
+        def button(self, _which):
+            return self._button
+
+    monkeypatch.setattr(ui, "QDialog", FakeDialog)
+    monkeypatch.setattr(ui, "QPlainTextEdit", FakeTextEdit)
+    monkeypatch.setattr(ui, "QVBoxLayout", FakeLayout)
+    monkeypatch.setattr(ui, "QDialogButtonBox", FakeButtons)
+
+    window.show_official_commands()
+
+    assert executed == [("OpenClaw 官方命令", (760, 620))]
     window.close()
 
 
@@ -365,14 +532,45 @@ def test_clone_current_profile_uses_dialog_result(monkeypatch, tmp_path):
     window.close()
 
 
-def test_open_localhost_url_without_value_shows_message(monkeypatch):
+def test_open_localhost_url_without_value_requests_enable_confirmation(monkeypatch):
     window = make_window()
-    infos = []
-    monkeypatch.setattr(ui.QMessageBox, "information", lambda *args: infos.append(args[1:3]))
+    prompts = []
+    starts = []
+    window.current_localhost_url_value = "-"
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *args, **kwargs: prompts.append(args[1:3]) or QMessageBox.StandardButton.No)
+    monkeypatch.setattr(window, "start_action", lambda *args: starts.append(args))
 
     window.open_localhost_url()
 
-    assert infos == [("暂无 localhost 地址", "请先开启 localhost 访问。")]
+    assert prompts == [("开启 localhost 访问", "当前未开启 localhost 访问，是否立即开启并打开 WebUI？")]
+    assert starts == []
+    window.close()
+
+
+def test_open_localhost_url_starts_prepare_action(monkeypatch):
+    window = make_window()
+    window.current_localhost_url_value = "http://127.0.0.1:18789"
+    calls = []
+    monkeypatch.setattr(window, "start_action", lambda label, func, dangerous: calls.append((label, func, dangerous)))
+
+    window.open_localhost_url()
+
+    assert calls and calls[0][0] == "打开 localhost WebUI"
+    assert calls[0][2] is False
+    window.close()
+
+
+def test_open_localhost_url_confirms_and_starts_when_disabled(monkeypatch):
+    window = make_window()
+    calls = []
+    window.current_localhost_url_value = "-"
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(window, "start_action", lambda label, func, dangerous: calls.append((label, func, dangerous)))
+
+    window.open_localhost_url()
+
+    assert calls and calls[0][0] == "打开 localhost WebUI"
+    assert calls[0][2] is False
     window.close()
 
 

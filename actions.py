@@ -123,15 +123,9 @@ def _verify_openclaw_with_runner(
         ("npm_version", "npm -v"),
         ("openclaw_path", "which openclaw"),
         ("openclaw_version", "openclaw --version"),
+        ("openclaw_status", "openclaw status --all"),
+        ("openclaw_health", "openclaw health --json"),
     ]
-    gateway_probe_command = (
-        "tmp=$(mktemp -t openclaw-gateway.XXXXXX); "
-        "openclaw gateway >\"$tmp\" 2>&1 & pid=$!; "
-        f"limit={config.gateway_probe_timeout_seconds}; i=0; "
-        "while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt \"$limit\" ]; do sleep 1; i=$((i+1)); done; "
-        "if kill -0 \"$pid\" 2>/dev/null; then echo '__GATEWAY_TIMEOUT__' >>\"$tmp\"; kill \"$pid\" 2>/dev/null || true; sleep 1; kill -9 \"$pid\" 2>/dev/null || true; fi; "
-        "wait \"$pid\" 2>/dev/null || true; cat \"$tmp\"; rm -f \"$tmp\""
-    )
 
     steps = []
     outputs = {}
@@ -140,28 +134,23 @@ def _verify_openclaw_with_runner(
         steps.append(step)
         outputs[name] = (step.command_result.stdout or step.command_result.stderr).strip()
 
-    gateway_step = _run_remote_step(
-        runner,
-        logger,
-        "gateway_probe",
-        gateway_probe_command,
-        config.gateway_probe_timeout_seconds + 5,
-        True,
-    )
-    steps.append(gateway_step)
-    gateway_output = f"{gateway_step.command_result.stdout}\n{gateway_step.command_result.stderr}".strip()
-    outputs["gateway_probe"] = gateway_output
-
     reasons = []
-    has_assets_issue = detect_ui_assets_issue(gateway_output)
+    status_output = outputs.get("openclaw_status", "")
+    health_output = outputs.get("openclaw_health", "")
+    status_summary_output = status_output.split("Gateway logs (tail, summarized):", 1)[0]
+    token_check_output = "\n".join([status_summary_output, health_output]).lower()
+    has_assets_issue = detect_ui_assets_issue(status_output) or detect_ui_assets_issue(health_output)
     if has_assets_issue:
-        reasons.append("gateway reported missing Control UI assets")
-    if "__GATEWAY_TIMEOUT__" in gateway_output:
-        reasons.append("gateway probe timed out and process was terminated")
-    if any(step.command_result.exit_code != 0 for step in steps[:4]):
+        reasons.append("official status check reported missing Control UI assets")
+    if "reason=token_missing" in token_check_output or "gateway token missing" in token_check_output:
+        reasons.append("gateway token missing")
+    elif "token mismatch" in token_check_output:
+        reasons.append("gateway token mismatch")
+    if any(step.command_result.exit_code != 0 for step in steps):
         reasons.append("basic binaries or versions check failed")
-    if gateway_step.command_result.ssh_issue:
-        reasons.append(gateway_step.command_result.ssh_issue)
+    for step in steps:
+        if step.command_result.ssh_issue:
+            reasons.append(step.command_result.ssh_issue)
 
     if not reasons:
         status = ActionStatus.SUCCESS
@@ -223,6 +212,38 @@ def _openclaw_process_running(step: StepResult) -> bool:
     return bool(output)
 
 
+def _upgrade_failure_requires_safe_stop(summary: dict) -> bool:
+    return bool(summary.get("upgrade_ssh_issue") or summary.get("upgrade_timed_out"))
+
+
+def _check_openclaw_install_state(
+    runner: SSHRunner,
+    logger: ActionLogger,
+    config: AppConfig,
+) -> tuple[list[StepResult], bool, bool]:
+    npm_root_step = _run_remote_step(runner, logger, "npm_global_root", "npm root -g", config.command_timeout_seconds, True)
+    npm_global_root = (npm_root_step.command_result.stdout or npm_root_step.command_result.stderr).strip() or config.npm_global_root
+    checks = [
+        (
+            "global_openclaw_exists",
+            f"if [ -d '{npm_global_root}/openclaw' ]; then echo exists; else echo missing; fi",
+        ),
+        (
+            "global_openclaw_residue",
+            f"find '{npm_global_root}' -maxdepth 1 -name '.openclaw-*' -print",
+        ),
+    ]
+    steps: list[StepResult] = [npm_root_step]
+    outputs: dict[str, str] = {}
+    for name, command in checks:
+        step = _run_remote_step(runner, logger, name, command, config.command_timeout_seconds, True)
+        steps.append(step)
+        outputs[name] = (step.command_result.stdout or step.command_result.stderr).strip()
+    install_exists = outputs["global_openclaw_exists"] == "exists"
+    has_residue = bool(outputs["global_openclaw_residue"])
+    return steps, install_exists, has_residue
+
+
 def _tunnel_state_path(config: AppConfig) -> Path:
     return config.logs_dir / f".localhost_tunnel_{config.selected_profile}.json"
 
@@ -233,6 +254,23 @@ def _process_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _run_secret_remote_command(
+    runner: SSHRunner,
+    logger: ActionLogger,
+    name: str,
+    command: str,
+    timeout: int,
+) -> CommandResult:
+    logger.write(f"==> {name}")
+    result = runner.run(command, timeout_seconds=timeout)
+    logger.write(f"[{name}] exit_code={result.exit_code} timed_out={result.timed_out}")
+    logger.write(f"command: {result.command}")
+    logger.write(f"full_command: {' '.join(result.full_command)}")
+    if result.ssh_issue:
+        logger.write(f"ssh_issue: {result.ssh_issue}")
+    return result
 
 
 def _read_tunnel_state(config: AppConfig) -> dict | None:
@@ -266,6 +304,67 @@ def get_localhost_access_url(config: AppConfig) -> str | None:
     if state is None:
         return None
     return str(state.get("localhost_url") or "")
+
+
+def _get_or_create_gateway_token(
+    runner: SSHRunner,
+    logger: ActionLogger,
+    config: AppConfig,
+) -> tuple[str | None, bool, list[StepResult]]:
+    steps: list[StepResult] = []
+    fetch_command = "openclaw config get gateway.auth.token 2>/dev/null || true"
+    fetch_result = _run_secret_remote_command(
+        runner,
+        logger,
+        "gateway_token_status",
+        fetch_command,
+        config.command_timeout_seconds,
+    )
+    token = (fetch_result.stdout or "").strip()
+    steps.append(
+        StepResult(
+            name="gateway_token_status",
+            status=ActionStatus.SUCCESS if token else ActionStatus.WARNING,
+            command_result=fetch_result,
+        )
+    )
+    if token:
+        return token, False, steps
+
+    generate_result = _run_secret_remote_command(
+        runner,
+        logger,
+        "generate_gateway_token",
+        "openclaw doctor --generate-gateway-token",
+        max(config.command_timeout_seconds, 300),
+    )
+    steps.append(
+        StepResult(
+            name="generate_gateway_token",
+            status=_step_status(generate_result),
+            command_result=generate_result,
+            message=generate_result.ssh_issue or "",
+        )
+    )
+    if generate_result.exit_code != 0:
+        return None, False, steps
+
+    refetch_result = _run_secret_remote_command(
+        runner,
+        logger,
+        "gateway_token_status_after_generate",
+        fetch_command,
+        config.command_timeout_seconds,
+    )
+    token = (refetch_result.stdout or "").strip()
+    steps.append(
+        StepResult(
+            name="gateway_token_status_after_generate",
+            status=ActionStatus.SUCCESS if token else ActionStatus.FAILED,
+            command_result=refetch_result,
+        )
+    )
+    return (token or None), True, steps
 
 
 def _can_bind_local_port(port: int) -> bool:
@@ -347,6 +446,17 @@ def self_repair_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
 
 def start_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        return _start_localhost_access_with_runner(runner, logger, config, started_at)
+
+    return run_action("开启 localhost 访问", config, ui_callback, worker)
+
+
+def _start_localhost_access_with_runner(
+    runner: SSHRunner,
+    logger: ActionLogger,
+    config: AppConfig,
+    started_at: str,
+) -> ActionResult:
         existing = _read_tunnel_state(config)
         localhost_url = f"http://127.0.0.1:{config.local_forward_port}"
         if existing is not None:
@@ -367,6 +477,33 @@ def start_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
             )
 
         if not _can_bind_local_port(config.local_forward_port):
+            if _wait_for_local_port(config.local_forward_port, timeout_seconds=0.5):
+                _write_tunnel_state(
+                    config,
+                    {
+                        "pid": -1,
+                        "profile_name": config.selected_profile,
+                        "localhost_url": localhost_url,
+                        "local_forward_port": config.local_forward_port,
+                        "remote_gateway_port": config.gateway_web_port,
+                    },
+                )
+                finished_at = now_iso()
+                return ActionResult(
+                    action_name="开启 localhost 访问",
+                    status=ActionStatus.SUCCESS,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=0.0,
+                    steps=[],
+                    summary={
+                        "already_running": True,
+                        "reused_existing_listener": True,
+                        "localhost_url": localhost_url,
+                        "local_forward_port": config.local_forward_port,
+                    },
+                    message=f"localhost 访问已就绪（{localhost_url}）",
+                )
             finished_at = now_iso()
             return ActionResult(
                 action_name="开启 localhost 访问",
@@ -470,11 +607,125 @@ def start_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
                 "local_forward_port": config.local_forward_port,
                 "remote_gateway_port": config.gateway_web_port,
                 "pid": process.pid,
+                },
+                message=f"localhost 访问已就绪（{localhost_url}）",
+            )
+
+def prepare_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        localhost_url = get_localhost_access_url(config)
+        if not localhost_url:
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="打开 localhost WebUI",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=0.0,
+                summary={"localhost_url": "", "error": "localhost access is not active"},
+                message="请先开启 localhost 访问",
+            )
+
+        token, generated, steps = _get_or_create_gateway_token(runner, logger, config)
+        finished_at = now_iso()
+        duration = sum(step.command_result.duration_seconds for step in steps if step.command_result)
+        if not token:
+            return ActionResult(
+                action_name="打开 localhost WebUI",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=duration,
+                steps=steps,
+                summary={"localhost_url": localhost_url, "token_ready": False},
+                message="未能获取 gateway token",
+            )
+
+        launch_url = f"{localhost_url}#token={token}"
+        return ActionResult(
+            action_name="打开 localhost WebUI",
+            status=ActionStatus.SUCCESS,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            steps=steps,
+            summary={
+                "localhost_url": localhost_url,
+                "token_ready": True,
+                "token_generated": generated,
+                "launch_url": launch_url,
             },
-            message=f"localhost 访问已就绪（{localhost_url}）",
+            message="localhost WebUI 已准备好",
         )
 
-    return run_action("开启 localhost 访问", config, ui_callback, worker)
+    return run_action("打开 localhost WebUI", config, ui_callback, worker)
+
+
+def open_localhost_webui(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        sequence = []
+        localhost_url = get_localhost_access_url(config)
+        access_started = False
+        if not localhost_url:
+            access_result = _start_localhost_access_with_runner(runner, logger, config, started_at)
+            sequence.extend(access_result.steps)
+            if access_result.status != ActionStatus.SUCCESS:
+                return ActionResult(
+                    action_name="打开 localhost WebUI",
+                    status=ActionStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=access_result.finished_at,
+                    duration_seconds=sum(step.command_result.duration_seconds for step in sequence if step.command_result),
+                    steps=sequence,
+                    summary={
+                        "localhost_url": "",
+                        "access_started": False,
+                        "nested_summary": access_result.summary,
+                    },
+                    message=access_result.message,
+                )
+            localhost_url = str(access_result.summary.get("localhost_url") or "").strip()
+            access_started = True
+
+        token, generated, steps = _get_or_create_gateway_token(runner, logger, config)
+        sequence.extend(steps)
+        finished_at = now_iso()
+        duration = sum(step.command_result.duration_seconds for step in sequence if step.command_result)
+        if not token:
+            return ActionResult(
+                action_name="打开 localhost WebUI",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=duration,
+                steps=sequence,
+                summary={
+                    "localhost_url": localhost_url or "",
+                    "token_ready": False,
+                    "access_started": access_started,
+                },
+                message="未能获取 gateway token",
+            )
+
+        launch_url = f"{localhost_url}#token={token}"
+        return ActionResult(
+            action_name="打开 localhost WebUI",
+            status=ActionStatus.SUCCESS,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            steps=sequence,
+            summary={
+                "localhost_url": localhost_url,
+                "token_ready": True,
+                "token_generated": generated,
+                "access_started": access_started,
+                "launch_url": launch_url,
+            },
+            message="localhost WebUI 已准备好",
+        )
+
+    return run_action("打开 localhost WebUI", config, ui_callback, worker)
 
 
 def stop_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
@@ -495,6 +746,19 @@ def stop_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
             )
 
         pid = int(existing["pid"])
+        if pid <= 0:
+            _clear_tunnel_state(config)
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="关闭 localhost 访问",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=0.0,
+                steps=[],
+                summary={"localhost_url": "", "stopped_pid": pid},
+                message="localhost 访问已关闭",
+            )
         started = time.monotonic()
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 3
@@ -553,17 +817,7 @@ def start_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
                 message="OpenClaw 已在运行",
             )
 
-        start_command = (
-            'log_file="${TMPDIR:-/tmp}/openclaw-gateway.log"; '
-            'nohup openclaw gateway >>"$log_file" 2>&1 </dev/null & pid=$!; '
-            'sleep 2; '
-            'if kill -0 "$pid" 2>/dev/null; then '
-            'echo "__STARTED__:$pid:$log_file"; '
-            "else "
-            'echo "__START_FAILED__:$pid:$log_file"; '
-            'wait "$pid" 2>/dev/null || true; '
-            "fi"
-        )
+        start_command = "openclaw gateway start"
         steps.append(
             _run_remote_step(
                 runner,
@@ -633,15 +887,7 @@ def stop_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
                 message="OpenClaw 未在运行",
             )
 
-        stop_command = (
-            "pids=$(pgrep -f 'openclaw gateway' || true); "
-            'if [ -n "$pids" ]; then '
-            'echo "$pids" | xargs kill; '
-            "sleep 2; "
-            "remaining=$(pgrep -f 'openclaw gateway' || true); "
-            'if [ -n "$remaining" ]; then echo "$remaining" | xargs kill -9; fi; '
-            "fi"
-        )
+        stop_command = "openclaw gateway stop"
         steps.append(
             _run_remote_step(
                 runner,
@@ -813,17 +1059,46 @@ def check_latest_release(config: AppConfig, ui_callback=None) -> ActionResult:
 def check_connection(config: AppConfig, ui_callback=None) -> ActionResult:
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
         step = _run_remote_step(runner, logger, "hostname", "hostname", config.command_timeout_seconds)
-        finished_at = now_iso()
-        duration = step.command_result.duration_seconds if step.command_result else 0.0
         host = step.command_result.stdout.strip() if step.command_result else ""
-        status = ActionStatus.SUCCESS if step.status == ActionStatus.SUCCESS else ActionStatus.FAILED
+        if step.status == ActionStatus.FAILED:
+            finished_at = now_iso()
+            duration = step.command_result.duration_seconds if step.command_result else 0.0
+            summary = {
+                "connected": False,
+                "target_host": host,
+                "duration_seconds": round(duration, 2),
+                "timed_out": step.command_result.timed_out if step.command_result else False,
+                "stderr": step.command_result.stderr.strip() if step.command_result else "",
+                "ssh_issue": step.command_result.ssh_issue if step.command_result else None,
+            }
+            return ActionResult(
+                action_name="连接检查",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=duration,
+                steps=[step],
+                summary=summary,
+                message="connection failed",
+            )
+
+        diagnose_result = diagnose_environment(config, ui_callback=logger.ui_callback)
+        verify_result = verify_openclaw(config, ui_callback=logger.ui_callback)
+        steps = [step, *diagnose_result.steps, *verify_result.steps]
+        status = ActionStatus.SUCCESS
+        if diagnose_result.status == ActionStatus.FAILED or verify_result.status == ActionStatus.FAILED:
+            status = ActionStatus.FAILED
+        elif diagnose_result.status == ActionStatus.WARNING or verify_result.status == ActionStatus.WARNING:
+            status = ActionStatus.WARNING
+        finished_at = verify_result.finished_at or diagnose_result.finished_at or now_iso()
+        duration = sum(current.command_result.duration_seconds for current in steps if current.command_result)
         summary = {
-            "connected": status == ActionStatus.SUCCESS,
+            "connected": True,
             "target_host": host,
             "duration_seconds": round(duration, 2),
-            "timed_out": step.command_result.timed_out if step.command_result else False,
-            "stderr": step.command_result.stderr.strip() if step.command_result else "",
-            "ssh_issue": step.command_result.ssh_issue if step.command_result else None,
+            "ssh_issue": None,
+            "diagnose": diagnose_result.summary,
+            "verify": verify_result.summary,
         }
         return ActionResult(
             action_name="连接检查",
@@ -831,9 +1106,9 @@ def check_connection(config: AppConfig, ui_callback=None) -> ActionResult:
             started_at=started_at,
             finished_at=finished_at,
             duration_seconds=duration,
-            steps=[step],
+            steps=steps,
             summary=summary,
-            message="connection ok" if status == ActionStatus.SUCCESS else "connection failed",
+            message="连接检查完成" if status == ActionStatus.SUCCESS else (verify_result.message or diagnose_result.message),
         )
 
     return run_action("连接检查", config, ui_callback, worker)
@@ -844,19 +1119,16 @@ def diagnose_environment(config: AppConfig, ui_callback=None) -> ActionResult:
         ("remote_path", "printf '%s\n' \"$PATH\""),
         ("node_version", "node -v"),
         ("npm_version", "npm -v"),
+        ("npm_global_root", "npm root -g"),
         ("openclaw_path", "which openclaw"),
         ("openclaw_version", "openclaw --version"),
         ("latest_openclaw_version", "npm view openclaw version"),
+        (
+            "gateway_token_status",
+            "if [ -n \"$(openclaw config get gateway.auth.token 2>/dev/null)\" ]; then echo configured; else echo missing; fi",
+        ),
         ("npm_home_exists", "if [ -d \"$HOME/.npm\" ]; then echo exists; else echo missing; fi"),
         ("npm_home_stat", "if [ -e \"$HOME/.npm\" ]; then ls -ldO \"$HOME/.npm\"; else echo missing; fi"),
-        (
-            "global_openclaw_exists",
-            f"if [ -d '{config.openclaw_install_dir}' ]; then echo exists; else echo missing; fi",
-        ),
-        (
-            "global_openclaw_residue",
-            f"find '{config.npm_global_root}' -maxdepth 1 -name '.openclaw-*' -print",
-        ),
     ]
 
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
@@ -868,16 +1140,32 @@ def diagnose_environment(config: AppConfig, ui_callback=None) -> ActionResult:
             result = step.command_result
             output = (result.stdout or result.stderr).strip()
             summary[name] = output
+        npm_global_root = str(summary.get("npm_global_root") or config.npm_global_root).strip() or config.npm_global_root
+        for name, command in [
+            ("global_openclaw_exists", f"if [ -d '{npm_global_root}/openclaw' ]; then echo exists; else echo missing; fi"),
+            ("global_openclaw_residue", f"find '{npm_global_root}' -maxdepth 1 -name '.openclaw-*' -print"),
+        ]:
+            step = _run_remote_step(runner, logger, name, command, config.command_timeout_seconds, True)
+            steps.append(step)
+            result = step.command_result
+            summary[name] = (result.stdout or result.stderr).strip()
         current_version = normalize_version_text(str(summary.get("openclaw_version", "")))
         latest_version = normalize_version_text(str(summary.get("latest_openclaw_version", "")))
         up_to_date = bool(current_version and latest_version and current_version == latest_version)
         summary["current_version_normalized"] = current_version
         summary["latest_version_normalized"] = latest_version
         summary["up_to_date"] = up_to_date
+        summary["gateway_token_configured"] = summary.get("gateway_token_status") == "configured"
         failures = [step for step in steps if step.status == ActionStatus.FAILED]
         needs_upgrade = bool(current_version and latest_version and current_version != latest_version)
-        status = ActionStatus.SUCCESS if not failures and not needs_upgrade else ActionStatus.WARNING
-        message = "需升级" if needs_upgrade else "diagnostic completed"
+        missing_token = summary.get("gateway_token_status") == "missing"
+        status = ActionStatus.SUCCESS if not failures and not needs_upgrade and not missing_token else ActionStatus.WARNING
+        if needs_upgrade:
+            message = "需升级"
+        elif missing_token:
+            message = "缺少 gateway token"
+        else:
+            message = "diagnostic completed"
         finished_at = now_iso()
         return ActionResult(
             action_name="环境诊断",
@@ -930,26 +1218,30 @@ def fix_npm_environment(config: AppConfig, ui_callback=None) -> ActionResult:
 
 
 def cleanup_openclaw_residue(config: AppConfig, ui_callback=None) -> ActionResult:
-    precheck_command = (
-        f"echo 'install_dir:'; ls -ld '{config.openclaw_install_dir}' 2>/dev/null || true; "
-        f"echo 'residue:'; find '{config.npm_global_root}' -maxdepth 1 -name '.openclaw-*' -print"
-    )
-    cleanup_command = (
-        f"rm -rf '{config.openclaw_install_dir}'; "
-        f"find '{config.npm_global_root}' -maxdepth 1 -name '.openclaw-*' -exec rm -rf {{}} +"
-    )
-    postcheck_command = precheck_command
-
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        npm_root_step = _run_remote_step(runner, logger, "npm_global_root", "npm root -g", config.command_timeout_seconds, True)
+        npm_global_root = (npm_root_step.command_result.stdout or npm_root_step.command_result.stderr).strip() or config.npm_global_root
+        install_dir = f"{npm_global_root}/openclaw"
+        residue_glob = f"{npm_global_root}/.openclaw-*"
+        precheck_command = (
+            f"echo 'install_dir:'; ls -ld '{install_dir}' 2>/dev/null || true; "
+            f"echo 'residue:'; find '{npm_global_root}' -maxdepth 1 -name '.openclaw-*' -print"
+        )
+        cleanup_command = (
+            f"rm -rf '{install_dir}'; "
+            f"find '{npm_global_root}' -maxdepth 1 -name '.openclaw-*' -exec rm -rf {{}} +"
+        )
         steps = [
+            npm_root_step,
             _run_remote_step(runner, logger, "pre_cleanup_status", precheck_command, config.command_timeout_seconds, True),
             _run_remote_step(runner, logger, "cleanup", cleanup_command, config.command_timeout_seconds),
-            _run_remote_step(runner, logger, "post_cleanup_status", postcheck_command, config.command_timeout_seconds, True),
+            _run_remote_step(runner, logger, "post_cleanup_status", precheck_command, config.command_timeout_seconds, True),
         ]
         status = ActionStatus.SUCCESS if all(step.status != ActionStatus.FAILED for step in steps) else ActionStatus.FAILED
         summary = {
-            "install_dir": config.openclaw_install_dir,
-            "residue_glob": config.openclaw_residue_glob,
+            "npm_global_root": npm_global_root,
+            "install_dir": install_dir,
+            "residue_glob": residue_glob,
         }
         finished_at = now_iso()
         return ActionResult(
@@ -995,6 +1287,10 @@ def upgrade_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
                 message=f"当前已是最新版，无需升级（{current_version}）",
             )
 
+        if current_version:
+            logger.write(f"阶段: 当前版本 {current_version}，准备升级到 {latest_version or 'latest'}")
+        else:
+            logger.write("阶段: 当前未检测到 OpenClaw，可执行文件缺失或已被清理，准备安装最新版")
         logger.write("阶段: 开始升级")
         steps = version_steps + [
             _run_remote_step(
@@ -1002,10 +1298,11 @@ def upgrade_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
                 logger,
                 "upgrade_openclaw",
                 "npm install -g openclaw@latest",
-                config.command_timeout_seconds,
+                max(config.command_timeout_seconds, 1800),
             )
         ]
-        if steps[0].status == ActionStatus.SUCCESS:
+        upgrade_step = steps[len(version_steps)]
+        if upgrade_step.status == ActionStatus.SUCCESS:
             logger.write("阶段: 进入验证")
             verification = _verify_openclaw_with_runner(runner, logger, config, started_at)
             steps.extend(verification.steps)
@@ -1013,7 +1310,9 @@ def upgrade_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
             summary = {
                 "previous_version": current_version,
                 "latest_version_before_upgrade": latest_version,
-                "upgrade_exit_code": steps[len(version_steps)].command_result.exit_code,
+                "upgrade_exit_code": upgrade_step.command_result.exit_code,
+                "upgrade_timed_out": upgrade_step.command_result.timed_out,
+                "upgrade_ssh_issue": upgrade_step.command_result.ssh_issue,
                 "verification": verification.summary,
             }
             message = verification.message
@@ -1024,9 +1323,17 @@ def upgrade_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
             summary = {
                 "previous_version": current_version,
                 "latest_version_before_upgrade": latest_version,
-                "upgrade_exit_code": steps[-1].command_result.exit_code,
+                "upgrade_exit_code": upgrade_step.command_result.exit_code,
+                "upgrade_timed_out": upgrade_step.command_result.timed_out,
+                "upgrade_ssh_issue": upgrade_step.command_result.ssh_issue,
+                "stderr": upgrade_step.command_result.stderr.strip(),
             }
-            message = "upgrade failed"
+            if upgrade_step.command_result.ssh_issue:
+                message = f"upgrade failed: {upgrade_step.command_result.ssh_issue}"
+            elif upgrade_step.command_result.timed_out:
+                message = "upgrade failed: install timed out"
+            else:
+                message = "upgrade failed"
             finished_at = now_iso()
             duration = sum(step.command_result.duration_seconds for step in steps if step.command_result)
         return ActionResult(
@@ -1092,35 +1399,54 @@ def fallback_source_build(config: AppConfig, ui_callback=None) -> ActionResult:
 def repair_and_upgrade(config: AppConfig, ui_callback=None) -> ActionResult:
     def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
         sequence = []
-        for action in (fix_npm_environment, cleanup_openclaw_residue, upgrade_openclaw):
-            nested = action(config, ui_callback=logger.ui_callback)
-            sequence.extend(nested.steps)
-            if nested.status == ActionStatus.FAILED:
-                finished_at = nested.finished_at
-                return ActionResult(
-                    action_name="一键修复并升级",
-                    status=ActionStatus.FAILED,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration_seconds=sum(
-                        step.command_result.duration_seconds for step in sequence if step.command_result
-                    ),
-                    steps=sequence,
-                    summary={"failed_action": action.__name__, "nested_summary": nested.summary},
-                    message=nested.message,
-                )
-        finished_at = now_iso()
+        logger.write("阶段: 开始升级 OpenClaw")
+        upgrade_result = upgrade_openclaw(config, ui_callback=logger.ui_callback)
+        sequence.extend(upgrade_result.steps)
+        if upgrade_result.status != ActionStatus.SUCCESS:
+            finished_at = upgrade_result.finished_at
+            return ActionResult(
+                action_name="一键升级并启动",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=sum(step.command_result.duration_seconds for step in sequence if step.command_result),
+                steps=sequence,
+                summary={"failed_action": "upgrade_openclaw", "nested_summary": upgrade_result.summary},
+                message=upgrade_result.message,
+            )
+
+        logger.write("阶段: 升级完成，开始启动 OpenClaw")
+        start_result = start_openclaw(config, ui_callback=logger.ui_callback)
+        sequence.extend(start_result.steps)
+        finished_at = start_result.finished_at
+        if start_result.status == ActionStatus.SUCCESS:
+            summary = {
+                "status": "complete",
+                "strategy": "upgrade_then_start",
+                "upgrade": upgrade_result.summary,
+                "start": start_result.summary,
+            }
+            message = "升级并启动完成"
+            status = ActionStatus.SUCCESS
+        else:
+            summary = {
+                "failed_action": "start_openclaw",
+                "upgrade": upgrade_result.summary,
+                "nested_summary": start_result.summary,
+            }
+            message = start_result.message
+            status = ActionStatus.FAILED
         return ActionResult(
-            action_name="一键修复并升级",
-            status=ActionStatus.SUCCESS,
+            action_name="一键升级并启动",
+            status=status,
             started_at=started_at,
             finished_at=finished_at,
             duration_seconds=sum(
                 step.command_result.duration_seconds for step in sequence if step.command_result
             ),
             steps=sequence,
-            summary={"status": "complete"},
-            message="repair and upgrade complete",
+            summary=summary,
+            message=message,
         )
 
-    return run_action("一键修复并升级", config, ui_callback, worker)
+    return run_action("一键升级并启动", config, ui_callback, worker)

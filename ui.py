@@ -5,6 +5,7 @@ import sys
 import traceback
 import webbrowser
 from pathlib import Path
+import shlex
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QGuiApplication, QIcon
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,21 +38,70 @@ from actions import (
     fallback_source_build,
     format_summary,
     get_localhost_access_url,
+    open_localhost_webui,
     repair_and_upgrade,
-    restart_openclaw,
     self_repair_openclaw,
-    start_openclaw,
     start_localhost_access,
-    stop_openclaw,
     stop_localhost_access,
     verify_openclaw,
 )
 from config import AppConfig, HostConfig, normalize_profile_name, save_config
 from models import ActionResult, ActionStatus
+from ssh_runner import SSHRunner
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 APP_ICON_PATH = ROOT_DIR / "assets" / "openclaw.png"
+OFFICIAL_COMMANDS_REFERENCE = """OpenClaw 官方 CLI 速查
+
+常用检查
+  openclaw status
+  openclaw status --all
+  openclaw status --deep
+  openclaw health --json
+  openclaw logs --follow
+
+更新与修复
+  openclaw doctor
+  openclaw doctor --repair
+  openclaw doctor --generate-gateway-token
+  openclaw update
+
+Gateway
+  openclaw gateway status
+  openclaw gateway health --url ws://127.0.0.1:18789
+  openclaw gateway stop
+  openclaw gateway restart
+  openclaw gateway --port 18789
+
+渠道与会话
+  openclaw channels status
+  openclaw channels login
+  openclaw channels logout
+  openclaw sessions
+  openclaw message
+
+模型与系统
+  openclaw models status
+  openclaw system
+  openclaw memory
+  openclaw directory
+
+其他官方命令入口
+  setup / onboard / configure / config
+  dashboard / backup / reset / uninstall
+  agent / agents / acp
+  nodes / node / devices
+  approvals / sandbox
+  tui / browser / cron / dns / docs
+  hooks / webhooks / pairing / plugins / channels
+
+官方文档
+  CLI Reference: https://docs.openclaw.ai/cli
+  Gateway CLI: https://docs.openclaw.ai/cli/gateway
+  Health Checks: https://docs.openclaw.ai/gateway/health
+  Updating: https://docs.openclaw.ai/updating
+"""
 
 
 class HostProfileDialog(QDialog):
@@ -78,10 +129,6 @@ class HostProfileDialog(QDialog):
         self.identity_only_input.setChecked(self.profile.ssh_identities_only)
         self.identity_file_input = QLineEdit(self.profile.ssh_identity_file)
         self.ssh_config_input = QLineEdit(self.profile.ssh_config_path)
-        self.path_prefix_input = QLineEdit(self.profile.remote_path_prefix)
-        self.repo_url_input = QLineEdit(self.profile.openclaw_repo_url)
-        self.workdir_input = QLineEdit(self.profile.remote_workdir)
-        self.npm_root_input = QLineEdit(self.profile.npm_global_root)
         self.command_timeout_input = QSpinBox()
         self.command_timeout_input.setRange(1, 7200)
         self.command_timeout_input.setValue(self.profile.command_timeout_seconds)
@@ -102,10 +149,6 @@ class HostProfileDialog(QDialog):
         form.addRow("强制 IdentitiesOnly", self.identity_only_input)
         form.addRow("私钥路径", self.identity_file_input)
         form.addRow("SSH 配置路径", self.ssh_config_input)
-        form.addRow("PATH 前缀", self.path_prefix_input)
-        form.addRow("OpenClaw 仓库", self.repo_url_input)
-        form.addRow("远程工作目录", self.workdir_input)
-        form.addRow("npm 全局目录", self.npm_root_input)
         form.addRow("命令超时秒数", self.command_timeout_input)
         form.addRow("gateway 探活秒数", self.gateway_timeout_input)
         form.addRow("远端 WebUI 端口", self.gateway_web_port_input)
@@ -133,10 +176,10 @@ class HostProfileDialog(QDialog):
             ssh_identities_only=self.identity_only_input.isChecked(),
             ssh_identity_file=self.identity_file_input.text().strip(),
             ssh_config_path=self.ssh_config_input.text().strip(),
-            remote_path_prefix=self.path_prefix_input.text().strip(),
-            openclaw_repo_url=self.repo_url_input.text().strip(),
-            remote_workdir=self.workdir_input.text().strip(),
-            npm_global_root=self.npm_root_input.text().strip(),
+            remote_path_prefix=self.profile.remote_path_prefix,
+            openclaw_repo_url=self.profile.openclaw_repo_url,
+            remote_workdir=self.profile.remote_workdir,
+            npm_global_root=self.profile.npm_global_root,
             command_timeout_seconds=self.command_timeout_input.value(),
             gateway_probe_timeout_seconds=self.gateway_timeout_input.value(),
             gateway_web_port=self.gateway_web_port_input.value(),
@@ -267,6 +310,8 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_version_value = "-"
         self.last_result_value = "-"
         self.current_localhost_url_value = get_localhost_access_url(config) or "-"
+        self.current_localhost_status_value = self._compute_localhost_status(self.current_localhost_url_value)
+        self.current_localhost_launch_url_value = ""
         self.bottom_status_value = "未运行"
         self.last_finished_value = "-"
         self.last_log_path_value = "-"
@@ -312,13 +357,15 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_label = QLabel(self.current_status_value)
         self.current_version_label = QLabel(self.current_version_value)
         self.last_result_label = QLabel(self.last_result_value)
+        self.localhost_status_label = QLabel(self.current_localhost_status_value)
         self.localhost_url_label = QLabel(self.current_localhost_url_value)
         self._add_info_row(top_layout, 0, "当前主机", selector_row)
         self._add_info_row(top_layout, 1, "目标主机", self.target_host_label)
         self._add_info_row(top_layout, 2, "当前状态", self.current_status_label)
         self._add_info_row(top_layout, 3, "当前 OpenClaw 版本", self.current_version_label)
-        self._add_info_row(top_layout, 4, "localhost 访问", self.localhost_url_label)
-        self._add_info_row(top_layout, 5, "最近一次操作结果", self.last_result_label)
+        self._add_info_row(top_layout, 4, "localhost 状态", self.localhost_status_label)
+        self._add_info_row(top_layout, 5, "localhost 地址", self.localhost_url_label)
+        self._add_info_row(top_layout, 6, "最近一次操作结果", self.last_result_label)
         layout.addWidget(top_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -358,79 +405,122 @@ class OpenClawDesktopApp(QMainWindow):
         panel.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
         layout.addWidget(QLabel("操作"))
 
-        action_groups = [
-            (
-                "检查",
-                [
-                    ("连接检查", check_connection, False),
-                    ("环境诊断", diagnose_environment, False),
-                    ("验证 OpenClaw", verify_openclaw, False),
-                ],
-            ),
-            (
-                "运行控制",
-                [
-                    ("启动 OpenClaw", start_openclaw, False),
-                    ("停止 OpenClaw", stop_openclaw, False),
-                    ("重启 OpenClaw", restart_openclaw, False),
-                ],
-            ),
-            (
-                "访问",
-                [
-                    ("开启 localhost 访问", start_localhost_access, False),
-                    ("关闭 localhost 访问", stop_localhost_access, False),
-                ],
-            ),
-            (
-                "修复",
-                [
-                    ("OpenClaw 自我修复", self_repair_openclaw, True),
-                    ("修复并升级", repair_and_upgrade, True),
-                    ("源码构建兜底", fallback_source_build, True),
-                ],
-            ),
-        ]
-        for index, (group_name, action_specs) in enumerate(action_groups):
-            section = self._build_action_section(group_name, action_specs)
-            layout.addWidget(section)
-            if index < len(action_groups) - 1:
-                separator = QFrame()
-                separator.setFrameShape(QFrame.Shape.HLine)
-                layout.addWidget(separator)
-
-        extras = [
+        function_specs = [
+            ("连接检查", check_connection, False),
             ("打开 localhost WebUI", self.open_localhost_url),
+            ("OpenClaw 自我修复", self_repair_openclaw, True),
+            ("一键升级并启动", repair_and_upgrade, True),
+            ("关闭 localhost 访问", stop_localhost_access, False),
+        ]
+        layout.addWidget(self._build_mixed_section("功能区", function_specs))
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(separator)
+
+        log_specs = [
             ("打开日志目录", self.open_logs_dir),
-            ("复制最近日志路径", self.copy_log_path),
             ("复制最近摘要", self.copy_summary),
         ]
-        for label, handler in extras:
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            layout.addWidget(button)
-            self.buttons.append(button)
+        layout.addWidget(self._build_mixed_section("日志区", log_specs))
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(separator)
+
+        tool_specs = [
+            ("打开 SSH 终端", self.open_ssh_terminal),
+            ("OpenClaw 官方命令", self.show_official_commands),
+        ]
+        layout.addWidget(self._build_mixed_section("工具区", tool_specs))
 
         layout.addStretch(1)
+
+        advanced_specs = [
+            ("环境诊断", diagnose_environment, False),
+            ("验证 OpenClaw", verify_openclaw, False),
+            ("源码构建兜底", fallback_source_build, True),
+        ]
+        layout.addWidget(self._build_collapsible_action_section("高级操作", advanced_specs))
         return panel
 
     def _build_action_section(self, title: str, action_specs: list[tuple[str, object, bool]]) -> QWidget:
         section = QWidget()
         section_layout = QVBoxLayout(section)
         section_layout.setContentsMargins(0, 0, 0, 0)
-        section_layout.setSpacing(6)
+        section_layout.setSpacing(8)
         heading = QLabel(title)
         heading.setStyleSheet("font-weight: 600; color: #334155;")
         section_layout.addWidget(heading)
         for label, func, dangerous in action_specs:
             text = f"{label} {'(危险)' if dangerous else ''}".strip()
             button = QPushButton(text)
+            button.setMinimumHeight(34)
             button.clicked.connect(lambda _checked=False, f=func, l=label, d=dangerous: self.start_action(l, f, d))
             section_layout.addWidget(button)
             self.buttons.append(button)
+        return section
+
+    def _build_mixed_section(self, title: str, action_specs: list[tuple]) -> QWidget:
+        section = QWidget()
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(8)
+        heading = QLabel(title)
+        heading.setStyleSheet("font-weight: 600; color: #334155;")
+        section_layout.addWidget(heading)
+        for spec in action_specs:
+            if len(spec) == 3:
+                label, func, dangerous = spec
+                text = f"{label} {'(危险)' if dangerous else ''}".strip()
+                button = QPushButton(text)
+                button.setMinimumHeight(34)
+                button.clicked.connect(lambda _checked=False, f=func, l=label, d=dangerous: self.start_action(l, f, d))
+            else:
+                label, handler = spec
+                button = QPushButton(label)
+                button.setMinimumHeight(34)
+                button.clicked.connect(handler)
+            section_layout.addWidget(button)
+            self.buttons.append(button)
+        return section
+
+    def _build_collapsible_action_section(self, title: str, action_specs: list[tuple[str, object, bool]]) -> QWidget:
+        section = QWidget()
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(8)
+
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setChecked(False)
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.ArrowType.RightArrow)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content.setVisible(False)
+        for label, func, dangerous in action_specs:
+            text = f"{label} {'(危险)' if dangerous else ''}".strip()
+            button = QPushButton(text)
+            button.setMinimumHeight(34)
+            button.clicked.connect(lambda _checked=False, f=func, l=label, d=dangerous: self.start_action(l, f, d))
+            content_layout.addWidget(button)
+            self.buttons.append(button)
+
+        def _toggle_content(checked: bool) -> None:
+            toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+            content.setVisible(checked)
+
+        toggle.toggled.connect(_toggle_content)
+        section_layout.addWidget(toggle)
+        section_layout.addWidget(content)
         return section
 
     def _build_right_panel(self) -> QWidget:
@@ -626,16 +716,17 @@ class OpenClawDesktopApp(QMainWindow):
         localhost_url = self._extract_localhost_url(result)
         if localhost_url is not None:
             self.current_localhost_url_value = localhost_url
+            self.current_localhost_status_value = self._compute_localhost_status(localhost_url)
+        launch_url = self._extract_localhost_launch_url(result)
+        if launch_url is not None:
+            self.current_localhost_launch_url_value = launch_url
         self.bottom_status_value = "运行中: 否"
         self.last_finished_value = result.finished_at
         self.last_log_path_value = result.log_path or "-"
         self.summary_text.setPlainText(format_summary(result.summary))
         self._refresh_status_labels()
-        summary_text = self.summary_text.toPlainText()
-        if result.status == ActionStatus.FAILED:
-            QMessageBox.critical(self, "操作失败", summary_text)
-        elif result.status == ActionStatus.WARNING:
-            QMessageBox.warning(self, "操作完成，但有告警", summary_text)
+        if result.action_name == "打开 localhost WebUI" and self.current_localhost_launch_url_value:
+            webbrowser.open(self.current_localhost_launch_url_value)
 
     def handle_error(self, trace: str) -> None:
         self.running = False
@@ -661,6 +752,21 @@ class OpenClawDesktopApp(QMainWindow):
                 version = details.get("openclaw_version")
                 if isinstance(version, str) and version:
                     return version
+            diagnose = result.summary.get("diagnose")
+            if isinstance(diagnose, dict):
+                version = diagnose.get("openclaw_version")
+                if isinstance(version, str) and version:
+                    return version
+                normalized = diagnose.get("current_version_normalized")
+                if isinstance(normalized, str) and normalized:
+                    return normalized
+            verify = result.summary.get("verify")
+            if isinstance(verify, dict):
+                verify_details = verify.get("details")
+                if isinstance(verify_details, dict):
+                    version = verify_details.get("openclaw_version")
+                    if isinstance(version, str) and version:
+                        return version
             version = result.summary.get("openclaw_version")
             if version is not None:
                 return str(version)
@@ -670,6 +776,14 @@ class OpenClawDesktopApp(QMainWindow):
         if isinstance(result.summary, dict) and "localhost_url" in result.summary:
             value = str(result.summary.get("localhost_url") or "").strip()
             return value or "-"
+        return None
+
+    def _extract_localhost_launch_url(self, result: ActionResult) -> str | None:
+        if isinstance(result.summary, dict) and "launch_url" in result.summary:
+            value = str(result.summary.get("launch_url") or "").strip()
+            return value
+        if result.action_name == "关闭 localhost 访问":
+            return ""
         return None
 
     def _set_controls_enabled(self, enabled: bool) -> None:
@@ -698,6 +812,8 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_version_value = "-"
         self.last_result_value = "-"
         self.current_localhost_url_value = get_localhost_access_url(self.config) or "-"
+        self.current_localhost_status_value = self._compute_localhost_status(self.current_localhost_url_value)
+        self.current_localhost_launch_url_value = ""
         self.bottom_status_value = "未运行"
         self.last_finished_value = "-"
         self.last_log_path_value = "-"
@@ -710,6 +826,7 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_task_label.setText(f"当前任务: {self.current_task_value}")
         self.current_status_label.setText(self.current_status_value)
         self.current_version_label.setText(self.current_version_value)
+        self.localhost_status_label.setText(self.current_localhost_status_value)
         self.localhost_url_label.setText(self.current_localhost_url_value)
         self.last_result_label.setText(self.last_result_value)
         self.bottom_status_label.setText(self.bottom_status_value)
@@ -736,17 +853,59 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_label.setStyleSheet(
             f"color: {self.status_light_color}; font-weight: 600;"
         )
+        localhost_enabled = self.current_localhost_status_value == "已开启"
+        self.localhost_status_label.setStyleSheet(
+            f"color: {'#16a34a' if localhost_enabled else '#64748b'}; font-weight: 600;"
+        )
+
+    def _compute_localhost_status(self, localhost_url: str) -> str:
+        return "已开启" if localhost_url and localhost_url != "-" else "未开启"
 
     def open_logs_dir(self) -> None:
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["open", str(self.config.logs_dir.resolve())])
 
-    def open_localhost_url(self) -> None:
-        url = self.current_localhost_url_value
-        if not url or url == "-":
-            QMessageBox.information(self, "暂无 localhost 地址", "请先开启 localhost 访问。")
+    def open_ssh_terminal(self) -> None:
+        if sys.platform != "darwin":
+            QMessageBox.information(self, "暂不支持", "当前仅支持在 macOS 上自动打开已连接的 SSH 终端。")
             return
-        webbrowser.open(url)
+        ssh_command = shlex.join([*SSHRunner(self.config).build_ssh_base_command(), self.config.remote_host])
+        script_command = ssh_command.replace("\\", "\\\\").replace('"', '\\"')
+        apple_script = [
+            "osascript",
+            "-e",
+            'tell application "Terminal" to activate',
+            "-e",
+            f'tell application "Terminal" to do script "{script_command}"',
+        ]
+        subprocess.Popen(apple_script)
+
+    def show_official_commands(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("OpenClaw 官方命令")
+        dialog.resize(760, 620)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(OFFICIAL_COMMANDS_REFERENCE)
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def open_localhost_url(self) -> None:
+        if not self.current_localhost_url_value or self.current_localhost_url_value == "-":
+            answer = QMessageBox.question(
+                self,
+                "开启 localhost 访问",
+                "当前未开启 localhost 访问，是否立即开启并打开 WebUI？",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.start_action("打开 localhost WebUI", open_localhost_webui, False)
 
     def copy_log_path(self) -> None:
         path = self.last_log_path_value
