@@ -2,7 +2,7 @@
 
 一个基于 Python `PyQt6` 的桌面运维工具，用来通过本机 `ssh` 连接远程主机，集中处理 OpenClaw 的连接检查、WebUI 访问、自我修复、升级启动和常见故障排查。
 
-![OpenClawOps Screenshot](docs/screenshots/openclawops-macos.png)
+![OpenClawOps Screenshot](docs/screenshots/openclawops-macos2.png)
 
 ## 项目背景
 
