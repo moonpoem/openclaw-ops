@@ -1,8 +1,29 @@
 # OpenClawOps
 
-一个基于 Python `PyQt6` 的桌面运维工具，用来通过本机 `ssh` 连接远程主机，执行 OpenClaw 相关的连接检查、环境诊断、版本检查、修复升级和源码构建兜底。
+一个基于 Python `PyQt6` 的桌面运维工具，用来通过本机 `ssh` 连接远程主机，集中处理 OpenClaw 的连接检查、WebUI 访问、自我修复、升级启动和常见故障排查。
 
 ![OpenClawOps Screenshot](docs/screenshots/openclawops-macos.png)
+
+## 项目背景
+
+这个工具的目标不是替代 OpenClaw 官方 CLI，而是把远程运维里最常见、最容易出错的几个动作收敛成桌面入口。
+
+典型场景是：
+
+- OpenClaw 运行在另一台 Mac、Linux 主机或家庭服务器上
+- 当前管理端无法直接访问远端的 WebUI，只能先通过 `ssh` 登录
+- 需要在图形界面里快速完成连接检查、localhost 转发、升级、自我修复和日志查看
+- 希望降低手动输入命令、复制 token、处理 SSH 参数和定位历史故障的成本
+
+因此，OpenClawOps 更像是一个“面向远程 OpenClaw 节点的桌面运维控制台”，而不是通用 SSH 客户端。
+
+## 适用场景
+
+- 使用一台本地 MacBook 远程管理另一台运行 OpenClaw 的主机
+- 家庭服务器、开发机、测试机上的 OpenClaw 日常维护
+- WebUI 无法直连时，通过 SSH 隧道临时转发到本机 `127.0.0.1`
+- OpenClaw 升级后需要快速验证版本、健康状态和网关访问
+- 遇到历史兼容问题时，需要快速执行自我修复或源码构建兜底
 
 ## License
 
@@ -12,22 +33,29 @@ MIT. See [LICENSE](/Users/moon/openclawops/LICENSE).
 
 - 多主机配置：支持在界面中新增、复制、编辑、删除主机配置
 - 连接测试：主机编辑弹窗里可直接测试 SSH 连通性
-- 顺序化操作流：
+- 主流程按钮：
   - `连接检查`
+  - `打开 localhost WebUI`
+  - `OpenClaw 自我修复`
+  - `一键升级并启动`
+  - `关闭 localhost 访问`
+- 高级操作：
   - `环境诊断`
-  - `修复并升级`
   - `验证 OpenClaw`
   - `源码构建兜底`
+- 工具区：
+  - `打开 SSH 终端`
+  - `OpenClaw 官方命令`
 - 状态指示：
   - 绿灯：成功
   - 黄灯：告警
   - 红灯：失败
   - 蓝灯：运行中
   - 灰灯：空闲
-- 版本检查：
-  - 独立的 `最新版检查`
-  - `环境诊断` 内会自动比较当前版本和 npm 最新版本
-  - 如果发现版本落后，会弹窗提示并把最近一次操作结果标记为 `需升级`
+- localhost 访问：
+  - 顶部显示 `localhost 状态` 与当前访问地址
+  - 打开 WebUI 时会自动确认并按需建立本地转发
+  - 会自动获取或生成 gateway token，并用本机地址打开
 
 ## 本地运行
 
@@ -64,15 +92,13 @@ Windows 打包产物：
 - `DISPLAY_NAME`
 - `REMOTE_HOST`
 - `REMOTE_USER`
-- `REMOTE_PATH_PREFIX`
 - `SSH_IDENTITIES_ONLY`
 - `SSH_IDENTITY_FILE`
 - `SSH_CONFIG_PATH`
-- `OPENCLAW_REPO_URL`
-- `REMOTE_WORKDIR`
-- `NPM_GLOBAL_ROOT`
 - `COMMAND_TIMEOUT_SECONDS`
 - `GATEWAY_PROBE_TIMEOUT_SECONDS`
+- `GATEWAY_WEB_PORT`
+- `LOCAL_FORWARD_PORT`
 
 额外主机会以 profile 形式写入 `.env`，例如：
 
