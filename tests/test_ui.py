@@ -100,6 +100,27 @@ def test_handle_result_shows_need_upgrade_in_last_result(monkeypatch):
     window.close()
 
 
+def test_handle_result_updates_localhost_url(monkeypatch):
+    window = make_window()
+    monkeypatch.setattr(ui.QMessageBox, "warning", lambda *args: None)
+    monkeypatch.setattr(ui.QMessageBox, "critical", lambda *args: None)
+
+    window.handle_result(
+        ActionResult(
+            action_name="开启 localhost 访问",
+            status=ActionStatus.SUCCESS,
+            started_at="2026-03-29T10:00:00",
+            finished_at="2026-03-29T10:00:01",
+            duration_seconds=0.2,
+            summary={"localhost_url": "http://127.0.0.1:18789"},
+            message="localhost 访问已就绪",
+        )
+    )
+
+    assert window.localhost_url_label.text() == "http://127.0.0.1:18789"
+    window.close()
+
+
 def test_handle_error_resets_state_and_shows_dialog(monkeypatch):
     window = make_window()
     errors = []
@@ -227,6 +248,9 @@ def test_primary_action_buttons_are_streamlined():
     assert "启动 OpenClaw" in labels
     assert "停止 OpenClaw" in labels
     assert "重启 OpenClaw" in labels
+    assert "开启 localhost 访问" in labels
+    assert "关闭 localhost 访问" in labels
+    assert "OpenClaw 自我修复 (危险)" in labels
     assert "修复并升级 (危险)" in labels
     assert "验证 OpenClaw" in labels
     assert "源码构建兜底 (危险)" in labels
@@ -241,7 +265,7 @@ def test_primary_action_buttons_are_streamlined():
 def test_primary_action_buttons_follow_grouped_order():
     window = make_window()
 
-    labels = [button.text() for button in window.buttons[:7]]
+    labels = [button.text() for button in window.buttons[:10]]
 
     assert labels == [
         "连接检查",
@@ -250,6 +274,9 @@ def test_primary_action_buttons_follow_grouped_order():
         "启动 OpenClaw",
         "停止 OpenClaw",
         "重启 OpenClaw",
+        "开启 localhost 访问",
+        "关闭 localhost 访问",
+        "OpenClaw 自我修复 (危险)",
         "修复并升级 (危险)",
     ]
     window.close()
@@ -335,6 +362,17 @@ def test_clone_current_profile_uses_dialog_result(monkeypatch, tmp_path):
     assert window.config.selected_profile == "default_copy"
     assert window.profile_selector.currentText() == "示例主机 副本"
     assert infos == [("主机已保存", "已保存主机配置：示例主机 副本")]
+    window.close()
+
+
+def test_open_localhost_url_without_value_shows_message(monkeypatch):
+    window = make_window()
+    infos = []
+    monkeypatch.setattr(ui.QMessageBox, "information", lambda *args: infos.append(args[1:3]))
+
+    window.open_localhost_url()
+
+    assert infos == [("暂无 localhost 地址", "请先开启 localhost 访问。")]
     window.close()
 
 

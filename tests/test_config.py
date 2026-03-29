@@ -16,6 +16,8 @@ def test_load_config_supports_multiple_profiles(tmp_path):
                 "PROFILE_STAGING_REMOTE_HOST=ops@staging.example.com",
                 "PROFILE_STAGING_REMOTE_USER=ops",
                 "PROFILE_STAGING_REMOTE_WORKDIR=$HOME/openclaw-staging",
+                "PROFILE_STAGING_GATEWAY_WEB_PORT=28080",
+                "PROFILE_STAGING_LOCAL_FORWARD_PORT=18080",
             ],
         ),
         encoding="utf-8",
@@ -29,6 +31,8 @@ def test_load_config_supports_multiple_profiles(tmp_path):
     assert config.profiles["staging"].remote_host == "ops@staging.example.com"
     assert config.remote_host == "ops@staging.example.com"
     assert config.remote_user == "ops"
+    assert config.gateway_web_port == 28080
+    assert config.local_forward_port == 18080
 
 
 def test_save_config_round_trip(tmp_path):
@@ -50,6 +54,8 @@ def test_save_config_round_trip(tmp_path):
     assert reloaded.selected_profile == "staging"
     assert reloaded.profiles["staging"].display_name == "预发布环境"
     assert reloaded.profiles["staging"].remote_host == "ops@staging.example.com"
+    assert reloaded.profiles["staging"].gateway_web_port == 18789
+    assert reloaded.profiles["staging"].local_forward_port == 18789
 
 
 def test_remove_profile_falls_back_to_primary():

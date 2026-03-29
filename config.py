@@ -104,6 +104,8 @@ class HostConfig:
     npm_global_root: str = "/opt/homebrew/lib/node_modules"
     command_timeout_seconds: int = 300
     gateway_probe_timeout_seconds: int = 8
+    gateway_web_port: int = 18789
+    local_forward_port: int = 18789
 
     @property
     def openclaw_install_dir(self) -> str:
@@ -211,6 +213,14 @@ class AppConfig:
         return self.active_profile.gateway_probe_timeout_seconds
 
     @property
+    def gateway_web_port(self) -> int:
+        return self.active_profile.gateway_web_port
+
+    @property
+    def local_forward_port(self) -> int:
+        return self.active_profile.local_forward_port
+
+    @property
     def openclaw_install_dir(self) -> str:
         return self.active_profile.openclaw_install_dir
 
@@ -242,6 +252,14 @@ def _host_from_values(values: dict[str, str], prefix: str, profile_name: str, de
         gateway_probe_timeout_seconds=_parse_int(
             values.get(f"{prefix}GATEWAY_PROBE_TIMEOUT_SECONDS"),
             defaults.gateway_probe_timeout_seconds,
+        ),
+        gateway_web_port=_parse_int(
+            values.get(f"{prefix}GATEWAY_WEB_PORT"),
+            defaults.gateway_web_port,
+        ),
+        local_forward_port=_parse_int(
+            values.get(f"{prefix}LOCAL_FORWARD_PORT"),
+            defaults.local_forward_port,
         ),
     )
 
@@ -304,6 +322,8 @@ def save_config(config: AppConfig, env_path: str | os.PathLike[str] | None = Non
         f"NPM_GLOBAL_ROOT={primary_profile.npm_global_root}",
         f"COMMAND_TIMEOUT_SECONDS={primary_profile.command_timeout_seconds}",
         f"GATEWAY_PROBE_TIMEOUT_SECONDS={primary_profile.gateway_probe_timeout_seconds}",
+        f"GATEWAY_WEB_PORT={primary_profile.gateway_web_port}",
+        f"LOCAL_FORWARD_PORT={primary_profile.local_forward_port}",
         f"LOGS_DIR={config.logs_dir}",
         f"PROFILE_NAMES={','.join(extra_profiles)}",
         f"ACTIVE_PROFILE={config.selected_profile}",
@@ -326,6 +346,8 @@ def save_config(config: AppConfig, env_path: str | os.PathLike[str] | None = Non
                 f"{prefix}NPM_GLOBAL_ROOT={profile.npm_global_root}",
                 f"{prefix}COMMAND_TIMEOUT_SECONDS={profile.command_timeout_seconds}",
                 f"{prefix}GATEWAY_PROBE_TIMEOUT_SECONDS={profile.gateway_probe_timeout_seconds}",
+                f"{prefix}GATEWAY_WEB_PORT={profile.gateway_web_port}",
+                f"{prefix}LOCAL_FORWARD_PORT={profile.local_forward_port}",
             ]
         )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import traceback
+import webbrowser
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
@@ -34,10 +35,14 @@ from actions import (
     diagnose_environment,
     fallback_source_build,
     format_summary,
+    get_localhost_access_url,
     repair_and_upgrade,
     restart_openclaw,
+    self_repair_openclaw,
     start_openclaw,
+    start_localhost_access,
     stop_openclaw,
+    stop_localhost_access,
     verify_openclaw,
 )
 from config import AppConfig, HostConfig, normalize_profile_name, save_config
@@ -83,6 +88,12 @@ class HostProfileDialog(QDialog):
         self.gateway_timeout_input = QSpinBox()
         self.gateway_timeout_input.setRange(1, 300)
         self.gateway_timeout_input.setValue(self.profile.gateway_probe_timeout_seconds)
+        self.gateway_web_port_input = QSpinBox()
+        self.gateway_web_port_input.setRange(1, 65535)
+        self.gateway_web_port_input.setValue(self.profile.gateway_web_port)
+        self.local_forward_port_input = QSpinBox()
+        self.local_forward_port_input.setRange(1, 65535)
+        self.local_forward_port_input.setValue(self.profile.local_forward_port)
 
         form.addRow("内部名称", self.profile_name_input)
         form.addRow("显示名称", self.display_name_input)
@@ -97,6 +108,8 @@ class HostProfileDialog(QDialog):
         form.addRow("npm 全局目录", self.npm_root_input)
         form.addRow("命令超时秒数", self.command_timeout_input)
         form.addRow("gateway 探活秒数", self.gateway_timeout_input)
+        form.addRow("远端 WebUI 端口", self.gateway_web_port_input)
+        form.addRow("本地转发端口", self.local_forward_port_input)
         layout.addLayout(form)
 
         self.test_status_label = QLabel("")
@@ -126,6 +139,8 @@ class HostProfileDialog(QDialog):
             npm_global_root=self.npm_root_input.text().strip(),
             command_timeout_seconds=self.command_timeout_input.value(),
             gateway_probe_timeout_seconds=self.gateway_timeout_input.value(),
+            gateway_web_port=self.gateway_web_port_input.value(),
+            local_forward_port=self.local_forward_port_input.value(),
         )
 
     def _test_connection(self) -> None:
@@ -251,6 +266,7 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_value = "Idle"
         self.current_version_value = "-"
         self.last_result_value = "-"
+        self.current_localhost_url_value = get_localhost_access_url(config) or "-"
         self.bottom_status_value = "未运行"
         self.last_finished_value = "-"
         self.last_log_path_value = "-"
@@ -296,11 +312,13 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_label = QLabel(self.current_status_value)
         self.current_version_label = QLabel(self.current_version_value)
         self.last_result_label = QLabel(self.last_result_value)
+        self.localhost_url_label = QLabel(self.current_localhost_url_value)
         self._add_info_row(top_layout, 0, "当前主机", selector_row)
         self._add_info_row(top_layout, 1, "目标主机", self.target_host_label)
         self._add_info_row(top_layout, 2, "当前状态", self.current_status_label)
         self._add_info_row(top_layout, 3, "当前 OpenClaw 版本", self.current_version_label)
-        self._add_info_row(top_layout, 4, "最近一次操作结果", self.last_result_label)
+        self._add_info_row(top_layout, 4, "localhost 访问", self.localhost_url_label)
+        self._add_info_row(top_layout, 5, "最近一次操作结果", self.last_result_label)
         layout.addWidget(top_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -361,8 +379,16 @@ class OpenClawDesktopApp(QMainWindow):
                 ],
             ),
             (
+                "访问",
+                [
+                    ("开启 localhost 访问", start_localhost_access, False),
+                    ("关闭 localhost 访问", stop_localhost_access, False),
+                ],
+            ),
+            (
                 "修复",
                 [
+                    ("OpenClaw 自我修复", self_repair_openclaw, True),
                     ("修复并升级", repair_and_upgrade, True),
                     ("源码构建兜底", fallback_source_build, True),
                 ],
@@ -377,6 +403,7 @@ class OpenClawDesktopApp(QMainWindow):
                 layout.addWidget(separator)
 
         extras = [
+            ("打开 localhost WebUI", self.open_localhost_url),
             ("打开日志目录", self.open_logs_dir),
             ("复制最近日志路径", self.copy_log_path),
             ("复制最近摘要", self.copy_summary),
@@ -465,6 +492,8 @@ class OpenClawDesktopApp(QMainWindow):
             npm_global_root=base.npm_global_root,
             command_timeout_seconds=base.command_timeout_seconds,
             gateway_probe_timeout_seconds=base.gateway_probe_timeout_seconds,
+            gateway_web_port=base.gateway_web_port,
+            local_forward_port=base.local_forward_port,
         )
 
     def _create_profile(self) -> None:
@@ -495,6 +524,8 @@ class OpenClawDesktopApp(QMainWindow):
             npm_global_root=base.npm_global_root,
             command_timeout_seconds=base.command_timeout_seconds,
             gateway_probe_timeout_seconds=base.gateway_probe_timeout_seconds,
+            gateway_web_port=base.gateway_web_port,
+            local_forward_port=base.local_forward_port,
         )
         dialog = HostProfileDialog(self, cloned, creating=True, logs_dir=self.config.logs_dir)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -592,6 +623,9 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_value = result.status.value.title()
         self.current_version_value = self._extract_version(result)
         self.last_result_value = result.message or result.status.value
+        localhost_url = self._extract_localhost_url(result)
+        if localhost_url is not None:
+            self.current_localhost_url_value = localhost_url
         self.bottom_status_value = "运行中: 否"
         self.last_finished_value = result.finished_at
         self.last_log_path_value = result.log_path or "-"
@@ -632,6 +666,12 @@ class OpenClawDesktopApp(QMainWindow):
                 return str(version)
         return self.current_version_value
 
+    def _extract_localhost_url(self, result: ActionResult) -> str | None:
+        if isinstance(result.summary, dict) and "localhost_url" in result.summary:
+            value = str(result.summary.get("localhost_url") or "").strip()
+            return value or "-"
+        return None
+
     def _set_controls_enabled(self, enabled: bool) -> None:
         for button in self.buttons:
             button.setEnabled(enabled)
@@ -657,6 +697,7 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_status_value = "Idle"
         self.current_version_value = "-"
         self.last_result_value = "-"
+        self.current_localhost_url_value = get_localhost_access_url(self.config) or "-"
         self.bottom_status_value = "未运行"
         self.last_finished_value = "-"
         self.last_log_path_value = "-"
@@ -669,6 +710,7 @@ class OpenClawDesktopApp(QMainWindow):
         self.current_task_label.setText(f"当前任务: {self.current_task_value}")
         self.current_status_label.setText(self.current_status_value)
         self.current_version_label.setText(self.current_version_value)
+        self.localhost_url_label.setText(self.current_localhost_url_value)
         self.last_result_label.setText(self.last_result_value)
         self.bottom_status_label.setText(self.bottom_status_value)
         self.last_finished_label.setText(f"最后完成时间: {self.last_finished_value}")
@@ -698,6 +740,13 @@ class OpenClawDesktopApp(QMainWindow):
     def open_logs_dir(self) -> None:
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["open", str(self.config.logs_dir.resolve())])
+
+    def open_localhost_url(self) -> None:
+        url = self.current_localhost_url_value
+        if not url or url == "-":
+            QMessageBox.information(self, "暂无 localhost 地址", "请先开启 localhost 访问。")
+            return
+        webbrowser.open(url)
 
     def copy_log_path(self) -> None:
         path = self.last_log_path_value

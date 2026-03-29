@@ -49,9 +49,23 @@ class SSHRunner:
         command = remote_command.strip()
         return f"{prefix} {command}"
 
+    def build_ssh_base_command(self) -> list[str]:
+        return ["ssh", *self._ssh_options()]
+
     def build_ssh_command(self, remote_command: str) -> list[str]:
         wrapped = self.build_remote_command(remote_command)
-        return ["ssh", *self._ssh_options(), self.config.remote_host, wrapped]
+        return [*self.build_ssh_base_command(), self.config.remote_host, wrapped]
+
+    def build_tunnel_command(self, *, local_port: int, remote_port: int) -> list[str]:
+        return [
+            *self.build_ssh_base_command(),
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-N",
+            "-L",
+            f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+            self.config.remote_host,
+        ]
 
     def run(
         self,

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 import json
+import os
 import re
 import shlex
+import signal
+import socket
+import subprocess
 import time
 
 from config import AppConfig
 from logging_utils import ActionLogger, create_log_file
-from models import ActionResult, ActionStatus, StepResult
+from models import ActionResult, ActionStatus, CommandResult, StepResult
 from ssh_runner import SSHRunner
 
 
@@ -218,6 +221,308 @@ def _openclaw_process_running(step: StepResult) -> bool:
         return False
     output = f"{step.command_result.stdout}\n{step.command_result.stderr}".strip()
     return bool(output)
+
+
+def _tunnel_state_path(config: AppConfig) -> Path:
+    return config.logs_dir / f".localhost_tunnel_{config.selected_profile}.json"
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_tunnel_state(config: AppConfig) -> dict | None:
+    path = _tunnel_state_path(config)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        path.unlink(missing_ok=True)
+        return None
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or not _process_alive(pid):
+        path.unlink(missing_ok=True)
+        return None
+    return payload
+
+
+def _write_tunnel_state(config: AppConfig, payload: dict) -> None:
+    path = _tunnel_state_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clear_tunnel_state(config: AppConfig) -> None:
+    _tunnel_state_path(config).unlink(missing_ok=True)
+
+
+def get_localhost_access_url(config: AppConfig) -> str | None:
+    state = _read_tunnel_state(config)
+    if state is None:
+        return None
+    return str(state.get("localhost_url") or "")
+
+
+def _can_bind_local_port(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _wait_for_local_port(port: int, timeout_seconds: float = 4.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.1)
+    return False
+
+
+def _local_command_result(command: list[str], *, exit_code: int, duration_seconds: float, stderr: str = ""):
+    return CommandResult(
+        command=" ".join(command),
+        full_command=command,
+        exit_code=exit_code,
+        stdout="",
+        stderr=stderr,
+        duration_seconds=duration_seconds,
+    )
+
+
+def self_repair_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        repair_step = _run_remote_step(
+            runner,
+            logger,
+            "doctor_repair",
+            "openclaw doctor --repair",
+            max(config.command_timeout_seconds, 600),
+        )
+        steps = [repair_step]
+        if repair_step.status == ActionStatus.FAILED:
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="OpenClaw 自我修复",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+                steps=steps,
+                summary={"repair_exit_code": repair_step.command_result.exit_code},
+                message="OpenClaw 自我修复失败",
+            )
+
+        verification = _verify_openclaw_with_runner(runner, logger, config, started_at)
+        steps.extend(verification.steps)
+        details = verification.summary.get("details", {})
+        finished_at = verification.finished_at
+        return ActionResult(
+            action_name="OpenClaw 自我修复",
+            status=verification.status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=sum(step.command_result.duration_seconds for step in steps if step.command_result),
+            steps=steps,
+            summary={
+                "repair_exit_code": repair_step.command_result.exit_code,
+                "verification": verification.summary,
+                "openclaw_version": details.get("openclaw_version"),
+            },
+            message="OpenClaw 自我修复完成" if verification.status == ActionStatus.SUCCESS else verification.message,
+        )
+
+    return run_action("OpenClaw 自我修复", config, ui_callback, worker)
+
+
+def start_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        existing = _read_tunnel_state(config)
+        localhost_url = f"http://127.0.0.1:{config.local_forward_port}"
+        if existing is not None:
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="开启 localhost 访问",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=0.0,
+                steps=[],
+                summary={
+                    "already_running": True,
+                    "localhost_url": existing.get("localhost_url", localhost_url),
+                    "pid": existing.get("pid"),
+                },
+                message=f"localhost 访问已就绪（{existing.get('localhost_url', localhost_url)}）",
+            )
+
+        if not _can_bind_local_port(config.local_forward_port):
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="开启 localhost 访问",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=0.0,
+                steps=[],
+                summary={
+                    "localhost_url": localhost_url,
+                    "local_forward_port": config.local_forward_port,
+                    "error": "local port is already in use",
+                },
+                message=f"本地端口已被占用：{config.local_forward_port}",
+            )
+
+        tunnel_command = runner.build_tunnel_command(
+            local_port=config.local_forward_port,
+            remote_port=config.gateway_web_port,
+        )
+        started = time.monotonic()
+        logger.write("==> start_localhost_access")
+        with logger.log_path.open("a", encoding="utf-8") as handle:
+            process = subprocess.Popen(
+                tunnel_command,
+                stdout=handle,
+                stderr=handle,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+            )
+        time.sleep(0.5)
+        if process.poll() is not None or not _wait_for_local_port(config.local_forward_port):
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            duration = time.monotonic() - started
+            step = StepResult(
+                name="start_localhost_access",
+                status=ActionStatus.FAILED,
+                command_result=_local_command_result(
+                    tunnel_command,
+                    exit_code=process.poll() or 1,
+                    duration_seconds=duration,
+                    stderr="localhost tunnel did not become ready",
+                ),
+                message="localhost tunnel failed to start",
+            )
+            logger.write_command_result("start_localhost_access", step.command_result)
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="开启 localhost 访问",
+                status=ActionStatus.FAILED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=duration,
+                steps=[step],
+                summary={
+                    "localhost_url": localhost_url,
+                    "local_forward_port": config.local_forward_port,
+                    "remote_gateway_port": config.gateway_web_port,
+                    "error": "localhost tunnel failed to become ready",
+                },
+                message="localhost 访问启动失败",
+            )
+
+        duration = time.monotonic() - started
+        step = StepResult(
+            name="start_localhost_access",
+            status=ActionStatus.SUCCESS,
+            command_result=_local_command_result(
+                tunnel_command,
+                exit_code=0,
+                duration_seconds=duration,
+            ),
+        )
+        logger.write_command_result("start_localhost_access", step.command_result)
+        _write_tunnel_state(
+            config,
+            {
+                "pid": process.pid,
+                "profile_name": config.selected_profile,
+                "localhost_url": localhost_url,
+                "local_forward_port": config.local_forward_port,
+                "remote_gateway_port": config.gateway_web_port,
+            },
+        )
+        finished_at = now_iso()
+        return ActionResult(
+            action_name="开启 localhost 访问",
+            status=ActionStatus.SUCCESS,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            steps=[step],
+            summary={
+                "localhost_url": localhost_url,
+                "local_forward_port": config.local_forward_port,
+                "remote_gateway_port": config.gateway_web_port,
+                "pid": process.pid,
+            },
+            message=f"localhost 访问已就绪（{localhost_url}）",
+        )
+
+    return run_action("开启 localhost 访问", config, ui_callback, worker)
+
+
+def stop_localhost_access(config: AppConfig, ui_callback=None) -> ActionResult:
+    def worker(runner: SSHRunner, logger: ActionLogger, config: AppConfig, started_at: str):
+        existing = _read_tunnel_state(config)
+        if existing is None:
+            _clear_tunnel_state(config)
+            finished_at = now_iso()
+            return ActionResult(
+                action_name="关闭 localhost 访问",
+                status=ActionStatus.SUCCESS,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=0.0,
+                steps=[],
+                summary={"localhost_url": "", "already_stopped": True},
+                message="localhost 访问未开启",
+            )
+
+        pid = int(existing["pid"])
+        started = time.monotonic()
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and _process_alive(pid):
+            time.sleep(0.1)
+        if _process_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+        duration = time.monotonic() - started
+        _clear_tunnel_state(config)
+        step = StepResult(
+            name="stop_localhost_access",
+            status=ActionStatus.SUCCESS,
+            command_result=_local_command_result(["kill", str(pid)], exit_code=0, duration_seconds=duration),
+        )
+        logger.write_command_result("stop_localhost_access", step.command_result)
+        finished_at = now_iso()
+        return ActionResult(
+            action_name="关闭 localhost 访问",
+            status=ActionStatus.SUCCESS,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            steps=[step],
+            summary={"localhost_url": "", "stopped_pid": pid},
+            message="localhost 访问已关闭",
+        )
+
+    return run_action("关闭 localhost 访问", config, ui_callback, worker)
 
 
 def start_openclaw(config: AppConfig, ui_callback=None) -> ActionResult:

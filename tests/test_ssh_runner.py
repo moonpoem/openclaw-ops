@@ -71,6 +71,43 @@ def test_build_ssh_command_supports_identity_file_and_config():
     ]
 
 
+def test_build_tunnel_command_uses_local_forwarding():
+    config = AppConfig(
+        profiles={
+            PRIMARY_PROFILE_NAME: HostConfig(
+                remote_host="openclaw-example",
+                ssh_identity_file="",
+                ssh_config_path="",
+            ),
+        }
+    )
+    runner = SSHRunner(config)
+
+    command = runner.build_tunnel_command(local_port=18789, remote_port=18789)
+
+    assert command == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "NumberOfPasswordPrompts=0",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=1",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-N",
+        "-L",
+        "127.0.0.1:18789:127.0.0.1:18789",
+        "openclaw-example",
+    ]
+
+
 def test_detect_ssh_issue_for_password_prompt():
     message = detect_ssh_issue(255, "Permission denied, please try again.\npassword:", False)
     assert message == "ssh authentication failed or requires interactive password input"
